@@ -40,10 +40,10 @@ class MonitoringCommands(BaseCommandMixin):
                 if len(self._packet_buffer) > self._max_packet_buffer:
                     self._packet_buffer.pop(0)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error adding packet to buffer: %s", e)
 
-    async def cmd_telemetry(self, message: discord.Message):
+    async def cmd_telemetry(self, message: discord.Message):  # pylint: disable=too-many-branches
         """Show telemetry information"""
         try:
             summary = self.database.get_telemetry_summary(60)
@@ -61,7 +61,7 @@ class MonitoringCommands(BaseCommandMixin):
                 embed.set_footer(text="🌍 UTC Time | Data collection in progress...")
                 await message.channel.send(embed=embed)
                 return
-        except Exception as db_error:
+        except Exception as db_error:  # pylint: disable=broad-exception-caught
             logger.error("Database error getting telemetry summary: %s", db_error)
             await self._safe_send(
                 message.channel,
@@ -77,7 +77,7 @@ class MonitoringCommands(BaseCommandMixin):
                     callable(self.meshtastic.iface.isConnected)):
                     if self.meshtastic.iface.isConnected():
                         connection_status = "✅ Connected"
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 connection_status = "❌ Disconnected"
 
         embed = discord.Embed(
@@ -139,7 +139,7 @@ Connection: {connection_status}""",
 
         await message.channel.send(embed=embed)
 
-    async def cmd_status(self, message: discord.Message):
+    async def cmd_status(self, message: discord.Message):  # pylint: disable=too-many-branches
         """Show bridge status"""
         # Check Meshtastic connection status safely
         meshtastic_status = "❌ Disconnected"
@@ -149,7 +149,7 @@ Connection: {connection_status}""",
                     callable(self.meshtastic.iface.isConnected)):
                     if self.meshtastic.iface.isConnected():
                         meshtastic_status = "✅ Connected"
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 meshtastic_status = "❌ Disconnected"
 
         # Get database statistics
@@ -157,7 +157,7 @@ Connection: {connection_status}""",
             db_stats = self.database.get_telemetry_summary(60)
             node_count = db_stats.get('total_nodes', 0)
             active_count = db_stats.get('active_nodes', 0)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             node_count = 0
             active_count = 0
 
@@ -246,7 +246,7 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
                             logger.debug("Cancelled live monitor task for user %s", user_id)
                         else:
                             logger.debug("Live monitor task for user %s was already done", user_id)
-                    except Exception as task_error:
+                    except Exception as task_error:  # pylint: disable=broad-exception-caught
                         logger.error("Error cancelling task for user %s: %s", user_id, task_error)
                         # Continue with cleanup even if task cancellation fails
 
@@ -254,8 +254,9 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
                 del self._live_monitors[user_id]
                 logger.debug("Successfully stopped live monitor for user %s", user_id)
                 return
-            except Exception as e:
-                logger.error("Error stopping live monitor for user %s: %s: %s", user_id, type(e).__name__, str(e))
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.error("Error stopping live monitor for user %s: %s: %s",
+                            user_id, type(e).__name__, str(e))
                 logger.error("Exception details: %s", repr(e))
                 await message.channel.send("🛑 **Live monitor stopped** (with errors)")
                 # Clean up even if there was an error
@@ -288,19 +289,23 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
 
         # Start the live monitoring task
         try:
-            task = asyncio.create_task(self._run_live_monitor(message.channel, user_id, status_message))
+            task = asyncio.create_task(
+                self._run_live_monitor(message.channel, user_id, status_message)
+            )
             self._live_monitors[user_id] = {'active': True, 'task': task}
-            logger.info("Started live monitor for user %s (%s)", message.author.display_name, user_id)
-        except Exception as e:
+            logger.info("Started live monitor for user %s (%s)",
+                        message.author.display_name, user_id)
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error starting live monitor for user %s: %s", user_id, e)
             await message.channel.send(f"❌ **Error starting live monitor:** {str(e)}")
             return
 
-    async def _run_live_monitor(self, channel, user_id, status_message):
+    async def _run_live_monitor(  # pylint: disable=too-many-locals
+            self, channel, user_id, status_message):
         """Run the live monitor for 60 seconds"""
         try:
             start_time = time.time()
-            last_update = start_time
+            # last_update = start_time  # pylint: disable=unused-variable
             packet_count = 0
 
             while time.time() - start_time < 60:  # 1 minute timeout
@@ -315,7 +320,9 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
                     packet_count = current_packets
 
                     # Update status message with new packets
-                    await self._update_live_display(channel, status_message, new_packets, time.time() - start_time)
+                    await self._update_live_display(
+                        channel, status_message, new_packets, time.time() - start_time
+                    )
                     last_update = time.time()
 
                 # Check every 0.5 seconds
@@ -323,23 +330,27 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
 
             # Final update
             if user_id in self._live_monitors and self._live_monitors[user_id]['active']:
-                await self._finalize_live_monitor(channel, status_message, packet_count, time.time() - start_time)
+                await self._finalize_live_monitor(
+                    channel, status_message, packet_count, time.time() - start_time
+                )
 
         except asyncio.CancelledError:
             logger.info("Live monitor cancelled for user %s", user_id)
-        except Exception as e:
-            logger.error("Error in live monitor for user %s: %s: %s", user_id, type(e).__name__, str(e))
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Error in live monitor for user %s: %s: %s",
+                        user_id, type(e).__name__, str(e))
             logger.error("Exception details: %s", repr(e))
             try:
                 await channel.send(f"❌ **Live monitor error:** {str(e)}")
-            except Exception as send_error:
+            except Exception as send_error:  # pylint: disable=broad-exception-caught
                 logger.error("Error sending error message: %s", send_error)
         finally:
             # Clean up
             if user_id in self._live_monitors:
                 del self._live_monitors[user_id]
 
-    async def _update_live_display(self, channel, status_message, new_packets, elapsed_time):
+    async def _update_live_display(  # pylint: disable=unused-argument,too-many-locals
+            self, channel, status_message, new_packets, elapsed_time):
         """Update the live monitor display with new packets"""
         try:
             if not new_packets:
@@ -397,10 +408,11 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
 
             await status_message.edit(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error updating live display: %s", e)
 
-    async def _finalize_live_monitor(self, channel, status_message, total_packets, elapsed_time):
+    async def _finalize_live_monitor(  # pylint: disable=unused-argument
+            self, channel, status_message, total_packets, elapsed_time):
         """Finalize the live monitor with summary"""
         try:
             embed = discord.Embed(
@@ -424,5 +436,5 @@ Current Time: {get_utc_time().strftime('%H:%M:%S UTC')}""",
 
             await status_message.edit(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error finalizing live monitor: %s", e)

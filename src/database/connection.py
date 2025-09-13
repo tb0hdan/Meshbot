@@ -57,7 +57,7 @@ class DatabaseConnection:
                             self._connection_pool.append(conn)
                         else:
                             conn.close()
-                except Exception as e:
+                except (sqlite3.Error, OSError) as e:
                     logger.warning("Error returning connection to pool: %s", e)
                     if conn:
                         conn.close()
@@ -75,7 +75,7 @@ class DatabaseConnection:
             for conn in self._connection_pool:
                 try:
                     conn.close()
-                except Exception as e:
+                except (sqlite3.Error, OSError) as e:
                     logger.warning("Error closing connection: %s", e)
             self._connection_pool.clear()
             logger.info("All database connections closed")

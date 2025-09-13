@@ -1,4 +1,5 @@
 """Basic command implementations for Meshbot."""
+# pylint: disable=duplicate-code
 import logging
 import queue
 
@@ -138,7 +139,7 @@ class BasicCommands(BaseCommandMixin):
                     return
 
                 logger.info("Found node: %s with ID: %s", node['long_name'], node['node_id'])
-            except Exception as db_error:
+            except (KeyError, ValueError, TypeError, AttributeError) as db_error:
                 logger.error("Database error finding node by name: %s", db_error)
                 await self._safe_send(message.channel, "❌ Error searching for node in database.")
                 return
@@ -185,7 +186,7 @@ class BasicCommands(BaseCommandMixin):
                 )
                 logger.warning("Discord to mesh queue is full")
 
-        except Exception as e:
+        except (ValueError, IndexError, AttributeError) as e:
             logger.error("Error parsing send command: %s", e)
             await self._safe_send(
                 message.channel,
@@ -215,7 +216,7 @@ class BasicCommands(BaseCommandMixin):
                 embed.set_footer(text="🌍 UTC Time | Check back later for activity")
                 await message.channel.send(embed=embed)
                 return
-        except Exception as db_error:
+        except (KeyError, ValueError, TypeError, AttributeError) as db_error:
             logger.error("Database error getting active nodes: %s", db_error)
             await self._safe_send(message.channel, "❌ Error retrieving node data from database.")
             return
@@ -225,14 +226,14 @@ class BasicCommands(BaseCommandMixin):
             try:
                 node_info = self._format_node_info(node)
                 active_nodes.append(node_info)
-            except Exception as e:
+            except (KeyError, ValueError, TypeError) as e:
                 logger.error("Error processing node %s: %s", node.get('node_id', 'Unknown'), e)
                 continue
 
         response = "📡 **Active Nodes (Last 60 minutes):**\n" + "\n".join(active_nodes)
         try:
             await self._send_long_message(message.channel, response)
-        except Exception as send_error:
+        except discord.HTTPException as send_error:
             logger.error("Error sending message to channel: %s", send_error)
             await message.channel.send("❌ Error sending message to channel.")
 
@@ -247,7 +248,7 @@ class BasicCommands(BaseCommandMixin):
             if not nodes:
                 await message.channel.send("📡 No nodes available.")
                 return
-        except Exception as db_error:
+        except (KeyError, ValueError, TypeError, AttributeError) as db_error:
             logger.error("Database error getting all nodes: %s", db_error)
             await message.channel.send("❌ Error retrieving node data from database.")
             return
@@ -257,13 +258,13 @@ class BasicCommands(BaseCommandMixin):
             try:
                 node_info = self._format_node_info(node)
                 node_list.append(node_info)
-            except Exception as e:
+            except (KeyError, ValueError, TypeError) as e:
                 logger.error("Error processing node %s: %s", node.get('node_id', 'Unknown'), e)
                 continue
 
         response = "📡 **All Known Nodes:**\n" + "\n".join(node_list)
         try:
             await self._send_long_message(message.channel, response)
-        except Exception as send_error:
+        except discord.HTTPException as send_error:
             logger.error("Error sending message to channel: %s", send_error)
             await self._safe_send(message.channel, "❌ Error sending message to channel.")

@@ -14,7 +14,7 @@ def connect_db(db_path="meshtastic.db"):
     try:
         conn = sqlite3.connect(db_path)
         return conn
-    except Exception as e:
+    except (sqlite3.Error, OSError) as e:
         print(f"Error connecting to database: {e}")
         return None
 
@@ -73,7 +73,7 @@ def show_stats(conn):
         db_size = cursor.fetchone()[0]
         print(f"Database size: {db_size / (1024*1024):.2f} MB")
 
-    except Exception as e:
+    except (sqlite3.Error, ValueError) as e:
         print(f"Error getting statistics: {e}")
 
 def show_recent_nodes(conn, limit=10):
@@ -101,7 +101,7 @@ def show_recent_nodes(conn, limit=10):
             long_name, node_id, last_heard, hops_away = node
             print(f"{long_name:20} | ID: {node_id:10} | Last: {last_heard:19} | Hops: {hops_away}")
 
-    except Exception as e:
+    except (sqlite3.Error, ValueError) as e:
         print(f"Error getting recent nodes: {e}")
 
 def cleanup_old_data(conn, days=30):
@@ -137,7 +137,7 @@ def cleanup_old_data(conn, days=30):
         cursor.execute("VACUUM")
         print("Database vacuumed to reclaim space")
 
-    except Exception as e:
+    except (sqlite3.Error, ValueError) as e:
         print(f"Error cleaning up data: {e}")
 
 def show_node_details(conn, node_name):
@@ -209,10 +209,11 @@ def show_node_details(conn, node_name):
                 if value is not None and key not in ['id', 'node_id', 'timestamp']:
                     print(f"  {key:20}: {value}")
 
-    except Exception as e:
+    except (sqlite3.Error, ValueError) as e:
         print(f"Error getting node details: {e}")
 
 def main():
+    """Main function for database maintenance script"""
     parser = argparse.ArgumentParser(
         description="Database maintenance for Meshtastic Discord Bridge Bot"
     )
@@ -251,4 +252,3 @@ def main():
 
     finally:
         conn.close()
-

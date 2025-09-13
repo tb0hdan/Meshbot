@@ -108,7 +108,7 @@ class NodeOperations:
         except sqlite3.Error as e:
             logger.error("Database error adding/updating node: %s", e)
             return False, False
-        except Exception as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error("Unexpected error adding/updating node: %s", e)
             return False, False
 
@@ -158,7 +158,7 @@ class NodeOperations:
         except sqlite3.Error as e:
             logger.error("Database error getting active nodes: %s", e)
             return []
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error("Unexpected error getting active nodes: %s", e)
             return []
 
@@ -205,7 +205,7 @@ class NodeOperations:
         except sqlite3.Error as e:
             logger.error("Database error getting all nodes: %s", e)
             return []
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error("Unexpected error getting all nodes: %s", e)
             return []
 
@@ -253,7 +253,7 @@ class NodeOperations:
         except sqlite3.Error as e:
             logger.error("Database error finding node by name: %s", e)
             return None
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error("Unexpected error finding node by name: %s", e)
             return None
 
@@ -277,6 +277,6 @@ class NodeOperations:
                 row = cursor.fetchone()
                 if row and row[0]:
                     return str(row[0])
-        except Exception as e:
+        except (sqlite3.Error, ValueError, TypeError) as e:
             logger.warning("Failed to lookup display name for %s: %s", node_id, e)
         return str(node_id)

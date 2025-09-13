@@ -204,7 +204,7 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
-    def create_error_embed(title: str, description: str, error_details: str = None) -> discord.Embed:
+    def create_error_embed(title: str, description: str, error_details: Optional[str] = None) -> discord.Embed:
         """Create a generic error embed"""
         embed = discord.Embed(
             title=title,
@@ -223,7 +223,7 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
-    def create_success_embed(title: str, description: str, details: str = None) -> discord.Embed:
+    def create_success_embed(title: str, description: str, details: Optional[str] = None) -> discord.Embed:
         """Create a generic success embed"""
         embed = discord.Embed(
             title=title,

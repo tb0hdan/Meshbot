@@ -20,4 +20,3 @@ __all__ = [
     'get_utc_time',
     'format_utc_time'
 ]
-

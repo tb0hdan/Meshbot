@@ -3,9 +3,9 @@ import asyncio
 import logging
 from typing import Optional
 
-import meshtastic
-import meshtastic.tcp_interface
-import meshtastic.serial_interface
+import meshtastic  # type: ignore[import-untyped]
+import meshtastic.tcp_interface  # type: ignore[import-untyped]
+import meshtastic.serial_interface  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,9 @@ class MeshtasticConnection:
 
             # Check connection status more safely
             try:
-                if hasattr(self.iface, 'isConnected') and callable(self.iface.isConnected):
+                if (self.iface is not None and
+                    hasattr(self.iface, 'isConnected') and
+                    callable(self.iface.isConnected)):
                     if self.iface.isConnected():  # pylint: disable=not-callable
                         logger.info("Successfully connected to Meshtastic")
                         return True

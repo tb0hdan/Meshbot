@@ -32,7 +32,7 @@ class DatabaseMaintenance:
                         time.sleep(10)
                     if not self._shutdown:
                         self.run_maintenance()
-                except Exception as e:
+                except (sqlite3.Error, OSError) as e:
                     logger.error("Error in maintenance task: %s", e)
                     time.sleep(300)  # Wait 5 minutes before retrying
 
@@ -65,7 +65,7 @@ class DatabaseMaintenance:
 
                 logger.info("Database maintenance completed")
 
-        except Exception as e:
+        except (sqlite3.Error, OSError) as e:
             logger.error("Error during database maintenance: %s", e)
 
     def cleanup_old_data(self, days: int = 30):
@@ -106,7 +106,7 @@ class DatabaseMaintenance:
             logger.error("Database operational error cleaning up old data: %s", e)
         except sqlite3.Error as e:
             logger.error("Database error cleaning up old data: %s", e)
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error("Unexpected error cleaning up old data: %s", e)
 
     def stop_maintenance(self):

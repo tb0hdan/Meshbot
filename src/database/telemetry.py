@@ -83,7 +83,7 @@ class TelemetryOperations:
         except sqlite3.Error as e:
             logger.error("Database error adding telemetry: %s", e)
             return False
-        except Exception as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error("Unexpected error adding telemetry: %s", e)
             return False
 
@@ -119,7 +119,7 @@ class TelemetryOperations:
         except sqlite3.Error as e:
             logger.error("Database error getting telemetry summary: %s", e)
             return {}
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error("Unexpected error getting telemetry summary: %s", e)
             return {}
 
@@ -148,6 +148,6 @@ class TelemetryOperations:
 
                 return [dict(zip(columns, row)) for row in rows]
 
-        except Exception as e:
+        except (sqlite3.Error, ValueError, TypeError) as e:
             logger.error("Error getting telemetry history: %s", e)
             return []

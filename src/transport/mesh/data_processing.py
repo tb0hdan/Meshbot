@@ -90,9 +90,9 @@ class MeshtasticDataProcessor:
         normalized['short_name'] = str(user_info.get('shortName', ''))
 
         # Handle device information
-        normalized['hw_model'] = raw_node_data.get('hwModel')
-        normalized['firmware_version'] = raw_node_data.get('firmwareVersion')
-        normalized['macaddr'] = raw_node_data.get('macaddr')
+        normalized['hw_model'] = raw_node_data.get('hwModel') or ''
+        normalized['firmware_version'] = raw_node_data.get('firmwareVersion') or ''
+        normalized['macaddr'] = raw_node_data.get('macaddr') or ''
 
         # Handle network information
         normalized['hops_away'] = raw_node_data.get('hopsAway', 0)

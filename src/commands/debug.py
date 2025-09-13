@@ -1,4 +1,5 @@
 """Debug and administrative command implementations for Meshbot."""
+# pylint: disable=duplicate-code
 import logging
 import time
 
@@ -22,7 +23,7 @@ class DebugCommands(BaseCommandMixin):
         """Clear database and force fresh start"""
         try:
             # Clear all data from database
-            with self.database._get_connection() as conn:
+            with self.database._get_connection() as conn:  # pylint: disable=protected-access
                 cursor = conn.cursor()
 
                 # Clear all tables
@@ -32,7 +33,10 @@ class DebugCommands(BaseCommandMixin):
                 cursor.execute("DELETE FROM nodes")
 
                 # Reset auto-increment counters
-                cursor.execute("DELETE FROM sqlite_sequence WHERE name IN ('telemetry', 'positions', 'messages')")
+                cursor.execute(
+                    "DELETE FROM sqlite_sequence WHERE name IN "
+                    "('telemetry', 'positions', 'messages')"
+                )
 
                 conn.commit()
 
@@ -65,7 +69,7 @@ class DebugCommands(BaseCommandMixin):
 
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error clearing database: %s", e)
             await self._safe_send(message.channel, f"❌ Error clearing database: {e}")
 
@@ -73,7 +77,7 @@ class DebugCommands(BaseCommandMixin):
         """Show debug information about database and data storage"""
         try:
             # Get database counts
-            with self.database._get_connection() as conn:
+            with self.database._get_connection() as conn:  # pylint: disable=protected-access
                 cursor = conn.cursor()
 
                 # Count records in each table
@@ -94,7 +98,9 @@ class DebugCommands(BaseCommandMixin):
             recent_telemetry = []
             if nodes:
                 # Get recent telemetry for first node
-                recent_telemetry = self.database.get_telemetry_history(nodes[0]['node_id'], hours=1, limit=5)
+                recent_telemetry = self.database.get_telemetry_history(
+                    nodes[0]['node_id'], hours=1, limit=5
+                )
 
             embed = discord.Embed(
                 title="🔍 Debug Information",
@@ -134,7 +140,10 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
             if recent_telemetry:
                 embed.add_field(
                     name="📈 **Recent Telemetry**",
-                    value=f"Found {len(recent_telemetry)} recent telemetry records for {nodes[0]['long_name']}",
+                    value=(
+                        f"Found {len(recent_telemetry)} recent telemetry "
+                        f"records for {nodes[0]['long_name']}"
+                    ),
                     inline=False
                 )
             else:
@@ -146,6 +155,6 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
 
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error getting debug info: %s", e)
             await self._safe_send(message.channel, f"❌ Error getting debug info: {e}")

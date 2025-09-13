@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any
 
 # Third party imports
 import discord
-from pubsub import pub
+from pubsub import pub  # type: ignore[import-untyped]
 
 # Local imports
 from src.config import Config
@@ -37,8 +37,8 @@ class DiscordBot(discord.Client):
         self.database = database
 
         # Queues for communication with size limits
-        self.mesh_to_discord = queue.Queue(maxsize=self.config.max_queue_size)
-        self.discord_to_mesh = queue.Queue(maxsize=self.config.max_queue_size)
+        self.mesh_to_discord: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=self.config.max_queue_size)
+        self.discord_to_mesh: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=self.config.max_queue_size)
 
         # Initialize command handler after queues are created
         self.command_handler = CommandHandler(meshtastic, self.discord_to_mesh, database)

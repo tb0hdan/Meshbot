@@ -1,4 +1,5 @@
 """Network analysis command implementations for Meshbot."""
+# pylint: disable=duplicate-code
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
@@ -19,7 +20,8 @@ class NetworkCommands(BaseCommandMixin):
         self.discord_to_mesh = discord_to_mesh
         self.database = database
 
-    async def cmd_network_topology(self, message: discord.Message):
+    async def cmd_network_topology(  # pylint: disable=too-many-branches
+            self, message: discord.Message):
         """Show network topology and connections with ASCII network diagram"""
         try:
             topology = self.database.get_network_topology()
@@ -82,11 +84,12 @@ Avg Hops: {topology['avg_hops']:.1f}""",
 
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error getting network topology: %s", e)
             await self._safe_send(message.channel, "❌ Error retrieving network topology.")
 
-    async def cmd_topology_tree(self, message: discord.Message):
+    async def cmd_topology_tree(  # pylint: disable=too-many-branches
+            self, message: discord.Message):
         """Show visual tree of all radio connections"""
         try:
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
@@ -115,11 +118,12 @@ Avg Hops: {topology['avg_hops']:.1f}""",
                       f"{active_connections} routes | {avg_hops:.1f} avg hops")
             await message.channel.send(summary)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error creating topology tree: %s", e)
             await self._safe_send(message.channel, "❌ Error creating connection tree.")
 
-    async def cmd_message_statistics(self, message: discord.Message):
+    async def cmd_message_statistics(  # pylint: disable=too-many-branches
+            self, message: discord.Message):
         """Show message statistics and network activity"""
         try:
             stats = self.database.get_message_statistics(hours=24)
@@ -172,11 +176,12 @@ Active Hours: {len(hourly_dist)}""",
 
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error getting message statistics: %s", e)
             await self._safe_send(message.channel, "❌ Error retrieving message statistics.")
 
-    async def cmd_trace_route(self, message: discord.Message):
+    async def cmd_trace_route(  # pylint: disable=too-many-branches,too-many-statements,too-many-locals
+            self, message: discord.Message):
         """Trace route to a specific node with visual hop-by-hop path"""
         content = message.content.strip()
 
@@ -280,14 +285,15 @@ Active Hours: {len(hourly_dist)}""",
                     inline=True
                 )
 
-            embed.set_footer(text=f"Route analysis completed at")
+            embed.set_footer(text="Route analysis completed")
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error tracing route: %s", e)
             await self._safe_send(message.channel, "❌ Error tracing route to node.")
 
-    async def cmd_leaderboard(self, message: discord.Message):
+    async def cmd_leaderboard(  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
+            self, message: discord.Message):
         """Show network performance leaderboards"""
         try:
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
@@ -390,7 +396,10 @@ Active Hours: {len(hourly_dist)}""",
                         if last_heard > datetime.now() - timedelta(hours=1):
                             active_count += 1
                     except (ValueError, TypeError) as e:
-                        logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)
+                        logger.warning(
+                            "Error parsing last_heard for node %s: %s",
+                            n.get('long_name', 'Unknown'), e
+                        )
                         continue
 
             embed.add_field(
@@ -404,11 +413,12 @@ Unique Senders: {stats.get('unique_senders', 0)}""",
 
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error creating leaderboard: %s", e)
             await self._safe_send(message.channel, "❌ Error creating leaderboard.")
 
-    async def cmd_network_art(self, message: discord.Message):
+    async def cmd_network_art(  # pylint: disable=too-many-branches,too-many-locals,too-many-statements
+            self, message: discord.Message):
         """Create ASCII network art"""
         try:
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
@@ -440,13 +450,16 @@ Unique Senders: {stats.get('unique_senders', 0)}""",
                         last_heard = datetime.fromisoformat(n['last_heard'].replace('Z', '+00:00'))
                         if last_heard > datetime.now() - timedelta(hours=1):
                             active_nodes.append(n)
-                    except (ValueError, TypeError) as e:
-                        logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)
+                    except (ValueError, TypeError) as e:  # pylint: disable=broad-exception-caught
+                        logger.warning(
+                            "Error parsing last_heard for node %s: %s",
+                            n.get('long_name', 'Unknown'), e
+                        )
                         continue
 
             if active_nodes:
                 art_lines.append("🟢 ACTIVE NODES:")
-                for i, node in enumerate(active_nodes[:8]):  # Limit to 8 for ASCII art
+                for node in active_nodes[:8]:  # Limit to 8 for ASCII art
                     snr = node.get('snr')
                     if snr is not None:
                         if snr > 5:
@@ -469,7 +482,7 @@ Unique Senders: {stats.get('unique_senders', 0)}""",
             # Show connections as lines
             if topology.get('connections'):
                 art_lines.append("🔗 CONNECTIONS:")
-                for i, conn in enumerate(topology['connections'][:5]):
+                for conn in topology['connections'][:5]:
                     from_name = self.database.get_node_display_name(conn['from_node'])[:10]
                     to_name = self.database.get_node_display_name(conn['to_node'])[:10]
                     art_lines.append(f"  {from_name} ─── {to_name}")
@@ -508,15 +521,16 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
 
             await message.channel.send(embed=embed)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error creating network art: %s", e)
             await self._safe_send(message.channel, "❌ Error creating network art.")
 
-    def _analyze_route_to_node(self, target_node_id: str, topology: dict) -> list:
+    def _analyze_route_to_node(  # pylint: disable=too-many-locals,unused-argument
+            self, target_node_id: str, topology: dict) -> list:
         """Analyze the route to a specific node based on message data"""
         try:
             # Get all messages to the target node
-            with self.database._get_connection() as conn:
+            with self.database._get_connection() as conn:  # pylint: disable=protected-access
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT from_node_id, to_node_id, hops_away, snr, rssi, timestamp
@@ -533,7 +547,7 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
 
             # Find the most common path by analyzing message patterns
             # Group messages by hops_away to understand the path
-            hop_groups = {}
+            hop_groups: Dict[int, List[Any]] = {}
             for msg in messages:
                 hops = msg[2]  # hops_away
                 if hops not in hop_groups:
@@ -574,11 +588,12 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
 
             return route_path
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Error analyzing route to node %s: %s", target_node_id, e)
             return []
 
-    def _format_route_path(self, route_path: list) -> str:
+    def _format_route_path(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+            self, route_path: list) -> str:
         """Format the route path for display with visual indicators"""
         if not route_path:
             return "No route data available"
@@ -588,7 +603,7 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
         for i, hop in enumerate(route_path):
             node_name = hop['node_name']
             node_id = hop['node_id']
-            hops_away = hop['hops_away']
+            # hops_away = hop['hops_away']  # pylint: disable=unused-variable
             snr = hop.get('snr')
             rssi = hop.get('rssi')
 
@@ -638,25 +653,23 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
         """Get signal quality icon based on SNR"""
         if snr > 10:
             return "🟢"  # Excellent
-        elif snr > 5:
+        if snr > 5:
             return "🟡"  # Good
-        elif snr > 0:
+        if snr > 0:
             return "🟠"  # Fair
-        else:
-            return "🔴"  # Poor
+        return "🔴"  # Poor
 
     def _assess_route_quality(self, avg_snr: float, total_hops: int) -> str:
         """Assess overall route quality"""
         if avg_snr > 10 and total_hops <= 2:
             return "🟢 Excellent"
-        elif avg_snr > 5 and total_hops <= 4:
+        if avg_snr > 5 and total_hops <= 4:
             return "🟡 Good"
-        elif avg_snr > 0 and total_hops <= 6:
+        if avg_snr > 0 and total_hops <= 6:
             return "🟠 Fair"
-        else:
-            return "🔴 Poor"
+        return "🔴 Poor"
 
-    def _create_network_diagram(self, nodes, connections):
+    def _create_network_diagram(self, nodes, connections):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
         """Create ASCII network diagram for topology visualization"""
         diagram_lines = []
         diagram_lines.append("🌐 NETWORK TOPOLOGY DIAGRAM")
@@ -671,8 +684,11 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                     last_heard = datetime.fromisoformat(n['last_heard'].replace('Z', '+00:00'))
                     if last_heard > datetime.now(timezone.utc) - timedelta(hours=1):
                         active_nodes.append(n)
-                except (ValueError, TypeError) as e:
-                    logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)
+                except (ValueError, TypeError) as e:  # pylint: disable=broad-exception-caught
+                    logger.warning(
+                        "Error parsing last_heard for node %s: %s",
+                        n.get('long_name', 'Unknown'), e
+                    )
                     continue
 
         # Sort by hops away
@@ -731,7 +747,9 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                 # Format node name
                 node_name = node['long_name'][:15]
                 if i == len(nodes_at_hop) - 1 and len(nodes_at_hop) > 6:
-                    diagram_lines.append(f"   └─ {signal_icon}{battery_icon} {node_name} +{len(nodes_at_hop)-6} more")
+                    diagram_lines.append(
+                        f"   └─ {signal_icon}{battery_icon} {node_name} +{len(nodes_at_hop)-6} more"
+                    )
                 else:
                     diagram_lines.append(f"   ├─ {signal_icon}{battery_icon} {node_name}")
 
@@ -744,19 +762,23 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                 from_name = self.database.get_node_display_name(conn['from_node'])[:12]
                 to_name = self.database.get_node_display_name(conn['to_node'])[:12]
                 msg_count = conn['message_count']
-                avg_hops = conn['avg_hops']
+                # avg_hops = conn['avg_hops']  # pylint: disable=unused-variable
 
                 if i == len(connections[:5]) - 1 and len(connections) > 5:
-                    diagram_lines.append(f"   {from_name} ──→ {to_name} ({msg_count}msgs) +{len(connections)-5} more")
+                    diagram_lines.append(
+                        f"   {from_name} ──→ {to_name} ({msg_count}msgs) +{len(connections)-5} more"
+                    )
                 else:
                     diagram_lines.append(f"   {from_name} ──→ {to_name} ({msg_count}msgs)")
 
         diagram_lines.append("")
-        diagram_lines.append("Legend: 🟢🟡🔴 Signal Quality | 🔋🪫🔴 Battery | ⚪❓ Unknown")
+        diagram_lines.append(
+            "Legend: 🟢🟡🔴 Signal Quality | 🔋🪫🔴 Battery | ⚪❓ Unknown"
+        )
 
         return "\n".join(diagram_lines)
 
-    def _create_connection_tree(self, nodes, connections):
+    def _create_connection_tree(self, nodes, connections):  # pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
         """Create readable ASCII tree for Discord showing network topology"""
         tree_lines = []
         tree_lines.append("🌐 MESH NETWORK TOPOLOGY")
@@ -799,17 +821,17 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
             hop_groups[hops].append(node)
 
         # Build readable tree
-        for hops in sorted(hop_groups.keys()):
+        for hops in sorted(hop_groups.keys()):  # pylint: disable=too-many-nested-blocks
             nodes_at_hop = hop_groups[hops]
 
             # Hop header
             if hops == 0:
-                tree_lines.append(f"\n📡 DIRECT CONNECTIONS (0 hops):")
+                tree_lines.append("\n📡 DIRECT CONNECTIONS (0 hops):")
             else:
                 tree_lines.append(f"\n🔗 {hops} HOP{'S' if hops > 1 else ''} AWAY:")
 
             # Show nodes with better formatting
-            for i, node in enumerate(nodes_at_hop):
+            for node in nodes_at_hop:
                 snr = node.get('snr')
                 battery = node.get('battery_level')
                 node_id = node.get('node_id')
@@ -846,7 +868,7 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                     bat_text = "Unknown"
 
                 # Node type
-                node_type = "Router" if node.get('is_router') else "Client"
+                # node_type = "Router" if node.get('is_router') else "Client"  # pylint: disable=unused-variable
                 type_icon = "📡" if node.get('is_router') else "📱"
 
                 # Find routing parent
@@ -875,14 +897,18 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
 
         # Top connections
         if connections:
-            tree_lines.append(f"\n🔗 TOP CONNECTIONS:")
-            sorted_conns = sorted(connections, key=lambda x: x['message_count'], reverse=True)
-            for i, conn in enumerate(sorted_conns[:5]):  # Top 5 connections
+            tree_lines.append("\n🔗 TOP CONNECTIONS:")
+            sorted_conns = sorted(
+                connections, key=lambda x: x['message_count'], reverse=True
+            )
+            for conn in sorted_conns[:5]:  # Top 5 connections
                 from_name = self.database.get_node_display_name(conn['from_node'])[:15]
                 to_name = self.database.get_node_display_name(conn['to_node'])[:15]
                 msgs = conn['message_count']
                 avg_hops = conn.get('avg_hops', 0)
 
-                tree_lines.append(f"  {from_name} ↔ {to_name} ({msgs} msgs, {avg_hops:.1f} avg hops)")
+                tree_lines.append(
+                    f"  {from_name} ↔ {to_name} ({msgs} msgs, {avg_hops:.1f} avg hops)"
+                )
 
         return "\n".join(tree_lines)

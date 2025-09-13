@@ -143,7 +143,7 @@ class PacketProcessor:
 
     def _extract_telemetry_data(self, telemetry_data: Dict[str, Any], packet: Dict[str, Any]) -> Dict[str, Any]:
         """Extract telemetry data from packet"""
-        extracted_data = {}
+        extracted_data: Dict[str, Any] = {}
 
         # Device metrics (battery, voltage, uptime, etc.)
         if 'deviceMetrics' in telemetry_data:

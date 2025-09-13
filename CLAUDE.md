@@ -6,6 +6,7 @@
 
 ## Project Commands
 - Lint: `make lint`
+- Mypy: `make mypy`
 - Test: `make test`
 
 ## Important Files

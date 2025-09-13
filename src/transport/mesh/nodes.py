@@ -15,7 +15,7 @@ class MeshtasticNodeProcessor:
     def __init__(self, connection, database: Optional[MeshtasticDatabase] = None):
         self.connection = connection
         self.database = database
-        self.last_node_refresh = 0
+        self.last_node_refresh = 0.0
 
     def process_nodes(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Process and store nodes in database"""
@@ -106,6 +106,8 @@ class MeshtasticNodeProcessor:
 
     def _store_node_in_database(self, node_info: Dict[str, Any]) -> Tuple[bool, bool]:
         """Store node in database and return (success, is_new)"""
+        if not self.database:
+            return False, False
         try:
             return self.database.add_or_update_node(node_info)
         except Exception as db_error:
@@ -130,7 +132,7 @@ class MeshtasticNodeProcessor:
                 telemetry_data[field] = node_data.get(field)
 
         # Only store telemetry if we have actual data
-        if telemetry_data:
+        if telemetry_data and self.database:
             try:
                 self.database.add_telemetry(node_id, telemetry_data)
                 logger.debug("Stored telemetry for %s: %s", node_id, telemetry_data)
@@ -140,7 +142,8 @@ class MeshtasticNodeProcessor:
     def _store_position_data(self, node_id: str, node_data: Dict[str, Any]):
         """Store position data if available"""
         if (node_data.get('latitude') is not None and
-            node_data.get('longitude') is not None):
+            node_data.get('longitude') is not None and
+            self.database):
             try:
                 position_data = {
                     'latitude': node_data.get('latitude'),

@@ -2,6 +2,7 @@
 Message database operations module
 Handles all message-related database operations
 """
+# pylint: disable=duplicate-code
 
 import sqlite3
 import logging
@@ -47,7 +48,7 @@ class MessageOperations:
         except sqlite3.Error as e:
             logger.error("Database error adding message: %s", e)
             return False
-        except Exception as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error("Unexpected error adding message: %s", e)
             return False
 
@@ -104,7 +105,7 @@ class MessageOperations:
                     'avg_hops': stats[3] or 0
                 }
 
-        except Exception as e:
+        except (sqlite3.Error, ValueError, TypeError) as e:
             logger.error("Error getting network topology: %s", e)
             return {
                 'connections': [],
@@ -123,7 +124,7 @@ class MessageOperations:
                 if hours > 0:
                     cutoff_time = datetime.now() - timedelta(hours=hours)
                     time_filter = "WHERE timestamp > ?"
-                    params = (cutoff_time.isoformat(),)
+                    params: tuple[str, ...] = (cutoff_time.isoformat(),)
                 else:
                     # hours=0 means no time filter
                     time_filter = ""
@@ -166,6 +167,6 @@ class MessageOperations:
                     'hourly_distribution': hourly_distribution
                 }
 
-        except Exception as e:
+        except (sqlite3.Error, ValueError, TypeError) as e:
             logger.error("Error getting message statistics: %s", e)
             return {}

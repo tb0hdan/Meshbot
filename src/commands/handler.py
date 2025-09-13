@@ -2,11 +2,10 @@
 
 Handles parsing and execution of Discord commands for Meshtastic network interaction.
 """
-import asyncio
 import logging
 import queue
 import time
-from typing import Dict, Any
+from typing import Dict
 
 import discord
 
@@ -19,7 +18,7 @@ from .debug import DebugCommands
 logger = logging.getLogger(__name__)
 
 
-class CommandHandler:
+class CommandHandler:  # pylint: disable=too-many-instance-attributes
     """Handles Discord bot commands with modular command structure"""
 
     def __init__(
@@ -66,7 +65,7 @@ class CommandHandler:
         }
 
         # Rate limiting
-        self._command_cooldowns = {}
+        self._command_cooldowns: Dict[int, float] = {}
         self._cooldown_duration = 2  # 2 seconds between commands per user
 
     async def handle_command(self, message: discord.Message) -> bool:
@@ -92,7 +91,7 @@ class CommandHandler:
                     # Update cooldown only after successful command execution
                     self._command_cooldowns[user_id] = now
                     return True
-                except Exception as e:
+                except (ValueError, TypeError, AttributeError, discord.HTTPException) as e:
                     logger.error("Error handling command %s: %s", cmd, e)
                     await self._safe_send(message.channel, f"❌ Error executing command: {e}")
                     return True
@@ -119,5 +118,5 @@ class CommandHandler:
         """Safely send a message to a channel with error handling"""
         try:
             await channel.send(message)
-        except Exception as e:
+        except discord.HTTPException as e:
             logger.error("Error sending message to channel: %s", e)

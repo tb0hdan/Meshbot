@@ -2,6 +2,7 @@
 Position database operations module
 Handles all position-related database operations
 """
+# pylint: disable=duplicate-code
 
 import sqlite3
 import logging
@@ -45,7 +46,7 @@ class PositionOperations:
         except sqlite3.Error as e:
             logger.error("Database error adding position: %s", e)
             return False
-        except Exception as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error("Unexpected error adding position: %s", e)
             return False
 
@@ -83,6 +84,6 @@ class PositionOperations:
         except sqlite3.Error as e:
             logger.error("Database error getting last position: %s", e)
             return None
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error("Unexpected error getting last position: %s", e)
             return None
