@@ -1,0 +1,5 @@
+all: lint
+
+lint:
+	@pylint ./
+

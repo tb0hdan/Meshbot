@@ -1,22 +1,25 @@
-import discord
+# Standard library imports
 import asyncio
-import os
-import sys
-import io
+import functools
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+import os
+import queue
+import sys
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List, Tuple
+
+# Third party imports
+import discord
 from dotenv import load_dotenv
 from pubsub import pub
 import meshtastic
 import meshtastic.tcp_interface
 import meshtastic.serial_interface
-import queue
-import time
-from datetime import datetime, timedelta
+
+# Local imports
 from database import MeshtasticDatabase
-import functools
-import weakref
 
 # Configure logging
 logging.basicConfig(
@@ -32,6 +35,12 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Import configuration
+try:
+    from config import BOT_CONFIG
+except ImportError:
+    BOT_CONFIG = {}  # Fallback to defaults
+
 def get_utc_time():
     """Get current time in UTC"""
     return datetime.utcnow()
@@ -44,36 +53,40 @@ def format_utc_time(dt=None, format_str="%Y-%m-%d %H:%M:%S UTC"):
 
 # Cache decorator for expensive operations
 def cache_result(ttl_seconds=300):
-    """Cache function results for a specified time"""
+    """Cache function results for a specified time (thread-safe)"""
     def decorator(func):
         cache = {}
         cache_times = {}
-        
+        cache_lock = asyncio.Lock()
+
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             # Create cache key
             key = str(args) + str(sorted(kwargs.items()))
             now = time.time()
-            
+
             # Check if cached result is still valid
-            if key in cache and now - cache_times.get(key, 0) < ttl_seconds:
-                return cache[key]
-            
+            async with cache_lock:
+                if key in cache and now - cache_times.get(key, 0) < ttl_seconds:
+                    return cache[key]
+
             # Execute function and cache result
             try:
                 result = await func(*args, **kwargs)
-                cache[key] = result
-                cache_times[key] = now
+                async with cache_lock:
+                    cache[key] = result
+                    cache_times[key] = now
                 return result
             except Exception as e:
-                logger.error(f"Error in cached function {func.__name__}: {e}")
+                logger.error("Error in cached function %s: %s", func.__name__, e)
                 raise
-        
+
         # Add cache cleanup method
-        def clear_cache():
-            cache.clear()
-            cache_times.clear()
-        
+        async def clear_cache():
+            async with cache_lock:
+                cache.clear()
+                cache_times.clear()
+
         wrapper.clear_cache = clear_cache
         return wrapper
     return decorator
@@ -86,35 +99,38 @@ class Config:
     meshtastic_hostname: Optional[str]
     message_max_length: int = 225
     node_refresh_interval: int = 60  # seconds
-    active_node_threshold: int = 60  # minutes (changed from 15 to 60)
+    active_node_threshold: int = 60  # minutes - configurable via config.py
     telemetry_update_interval: int = 3600  # 1 hour in seconds
+    max_queue_size: int = 1000  # Maximum queue size for messages
 
 class MeshtasticInterface:
     """Handles Meshtastic radio communication"""
-    
-    def __init__(self, hostname: Optional[str] = None, database: Optional[MeshtasticDatabase] = None):
+
+    def __init__(
+        self, hostname: Optional[str] = None, database: Optional[MeshtasticDatabase] = None
+    ):
         self.hostname = hostname
         self.iface = None  # Changed to match reference implementation
         self.database = database
         self.last_node_refresh = 0
-        
+
     async def connect(self) -> bool:
         """Connect to Meshtastic radio"""
         try:
             if self.hostname and len(self.hostname) > 1:
-                logger.info(f"Connecting to Meshtastic via TCP: {self.hostname}")
+                logger.info("Connecting to Meshtastic via TCP: %s", self.hostname)
                 self.iface = meshtastic.tcp_interface.TCPInterface(self.hostname)
             else:
                 logger.info("Connecting to Meshtastic via Serial")
                 self.iface = meshtastic.serial_interface.SerialInterface()
-            
+
             # Wait for connection
             await asyncio.sleep(2)
-            
+
             # Check connection status more safely
             try:
                 if hasattr(self.iface, 'isConnected') and callable(self.iface.isConnected):
-                    if self.iface.isConnected():
+                    if self.iface.isConnected():  # pylint: disable=not-callable
                         logger.info("Successfully connected to Meshtastic")
                         return True
                     else:
@@ -124,81 +140,91 @@ class MeshtasticInterface:
                     # If isConnected method doesn't exist, assume connection is successful
                     logger.info("Connected to Meshtastic (connection status unknown)")
                     return True
-                    
+
             except Exception as conn_check_error:
-                logger.warning(f"Could not check connection status: {conn_check_error}")
+                logger.warning("Could not check connection status: %s", conn_check_error)
                 logger.info("Assuming connection is successful")
                 return True
-                
+
         except Exception as e:
-            logger.error(f"Error connecting to Meshtastic: {e}")
+            logger.error("Error connecting to Meshtastic: %s", e)
             return False
-    
+
     def send_text(self, message: str, destination_id: Optional[str] = None) -> bool:
         """Send text message via Meshtastic"""
         try:
             if not self.iface:
                 logger.error("No Meshtastic interface available")
                 return False
-                
+
             if destination_id:
-                logger.info(f"Attempting to send message to node {destination_id} (type: {type(destination_id)})")
+                logger.info(
+                    "Attempting to send message to node %s (type: %s)",
+                    destination_id,
+                    type(destination_id)
+                )
                 # Use the correct Meshtastic API based on the reference implementation
                 try:
                     # Try the standard Meshtastic API
                     self.iface.sendText(message, destinationId=destination_id)
-                    logger.info(f"Sent message to node {destination_id}: {message[:50]}...")
+                    logger.info("Sent message to node %s: %s...", destination_id, message[:50])
                 except Exception as e:
-                    logger.error(f"Error sending to specific node {destination_id}: {e}")
+                    logger.error("Error sending to specific node %s: %s", destination_id, e)
                     # Fallback to primary channel
-                    logger.warning(f"Falling back to primary channel")
+                    logger.warning("Falling back to primary channel")
                     self.iface.sendText(message)
                     return True
             else:
                 self.iface.sendText(message)
-                logger.info(f"Sent message to primary channel: {message[:50]}...")
+                logger.info("Sent message to primary channel: %s...", message[:50])
             return True
         except Exception as e:
-            logger.error(f"Error sending message: {e}")
+            logger.error("Error sending message: %s", e)
             return False
-    
+
     def process_nodes(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Process and store nodes in database"""
         if not self.iface or not self.database:
             return [], []
-        
+
         try:
             if not hasattr(self.iface, 'nodes'):
                 logger.debug("Interface has no nodes attribute")
                 return [], []
-                
+
             nodes = self.iface.nodes
             if not nodes:
                 logger.debug("No nodes available to process")
                 return [], []
-                
+
             processed_nodes = []
             new_nodes = []
-            
-            logger.info(f"Processing {len(nodes)} nodes from Meshtastic interface")
-            
+
+            logger.info("Processing %s nodes from Meshtastic interface", len(nodes))
+
             for node_id, node_data in nodes.items():
                 try:
                     # Extract node information with better error handling
                     node_info = {
                         'node_id': str(node_id),
                         'node_num': node_data.get('num'),
-                        'long_name': str(node_data.get('user', {}).get('longName', 'Unknown')),
-                        'short_name': str(node_data.get('user', {}).get('shortName', '')),
+                        'long_name': str(
+                            node_data.get('user', {}).get('longName', 'Unknown')
+                        ),
+                        'short_name': str(
+                            node_data.get('user', {}).get('shortName', '')
+                        ),
                         'macaddr': node_data.get('macaddr'),
                         'hw_model': node_data.get('hwModel'),
                         'firmware_version': node_data.get('firmwareVersion'),
-                        'last_heard': datetime.fromtimestamp(node_data.get('lastHeard', time.time())).isoformat(),
+                        'last_heard': datetime.fromtimestamp(
+                            node_data.get('lastHeard', time.time())
+                        ).isoformat(),
                         'hops_away': node_data.get('hopsAway', 0),
                         'is_router': node_data.get('isRouter', False),
                         'is_client': node_data.get('isClient', True)
                     }
-                    
+
                                     # Store in database
                     try:
                         success, is_new = self.database.add_or_update_node(node_info)
@@ -206,11 +232,15 @@ class MeshtasticInterface:
                             processed_nodes.append(node_info)
                             if is_new:
                                 new_nodes.append(node_info)
-                                logger.info(f"New node added: {node_info['long_name']} ({node_info['node_id']})")
+                                logger.info(
+                                    "New node added: %s (%s)", 
+                                    node_info['long_name'], 
+                                    node_info['node_id']
+                                )
                     except Exception as db_error:
-                        logger.error(f"Database error for node {node_id}: {db_error}")
+                        logger.error("Database error for node %s: %s", node_id, db_error)
                         continue
-                    
+
                     # Store telemetry if available - check for actual values
                     telemetry_data = {}
                     if node_data.get('snr') is not None:
@@ -231,17 +261,25 @@ class MeshtasticInterface:
                         telemetry_data['heading'] = node_data.get('heading')
                     if node_data.get('accuracy') is not None:
                         telemetry_data['accuracy'] = node_data.get('accuracy')
-                    
+
                     # Only store telemetry if we have actual data
                     if telemetry_data:
                         try:
                             self.database.add_telemetry(node_info['node_id'], telemetry_data)
-                            logger.debug(f"Stored telemetry for {node_info['long_name']}: {telemetry_data}")
+                            logger.debug(
+                                "Stored telemetry for %s: %s", 
+                                node_info['long_name'], 
+                                telemetry_data
+                            )
                         except Exception as telemetry_error:
-                            logger.error(f"Error storing telemetry for node {node_id}: {telemetry_error}")
-                    
+                            logger.error(
+                                "Error storing telemetry for node %s: %s", 
+                                node_id, 
+                                telemetry_error
+                            )
+
                     # Store position if available
-                    if (node_data.get('latitude') is not None and 
+                    if (node_data.get('latitude') is not None and
                         node_data.get('longitude') is not None):
                         try:
                             position_data = {
@@ -254,38 +292,47 @@ class MeshtasticInterface:
                                 'source': 'meshtastic'
                             }
                             self.database.add_position(node_info['node_id'], position_data)
-                            logger.debug(f"Stored position for {node_info['long_name']}")
+                            logger.debug("Stored position for %s", node_info['long_name'])
                         except Exception as position_error:
-                            logger.error(f"Error storing position for node {node_id}: {position_error}")
-                        
+                            logger.error(
+                                "Error storing position for node %s: %s", 
+                                node_id, 
+                                position_error
+                            )
+
                 except Exception as e:
-                    logger.error(f"Error processing node {node_id}: {e}")
+                    logger.error("Error processing node %s: %s", node_id, e)
                     continue
-            
+
             self.last_node_refresh = time.time()
-            logger.info(f"Processed {len(processed_nodes)} nodes, {len(new_nodes)} new")
+            logger.info("Processed %s nodes, %s new", len(processed_nodes), len(new_nodes))
             return processed_nodes, new_nodes
-            
+
         except Exception as e:
-            logger.error(f"Error processing nodes: {e}")
+            logger.error("Error processing nodes: %s", e)
             return [], []
-    
+
     def get_nodes_from_db(self) -> List[Dict[str, Any]]:
         """Get nodes from database"""
         if not self.database:
             return []
         try:
             nodes = self.database.get_all_nodes()
-            logger.debug(f"Retrieved {len(nodes)} nodes from database")
+            logger.debug("Retrieved %s nodes from database", len(nodes))
             return nodes
         except Exception as e:
-            logger.error(f"Error getting nodes from database: {e}")
+            logger.error("Error getting nodes from database: %s", e)
             return []
 
 class CommandHandler:
     """Handles Discord bot commands with caching and performance optimizations"""
-    
-    def __init__(self, meshtastic: MeshtasticInterface, discord_to_mesh: queue.Queue, database: MeshtasticDatabase):
+
+    def __init__(
+        self, 
+        meshtastic: MeshtasticInterface, 
+        discord_to_mesh: queue.Queue, 
+        database: MeshtasticDatabase
+    ):
         self.meshtastic = meshtastic
         self.discord_to_mesh = discord_to_mesh
         self.database = database
@@ -307,37 +354,41 @@ class CommandHandler:
             '$clear': self.cmd_clear_database,
             '$debug': self.cmd_debug_info
         }
-        
+
         # Cache for frequently accessed data
         self._node_cache = {}
         self._cache_timestamps = {}
         self._cache_ttl = 60  # 1 minute cache TTL
-        
+
         # Rate limiting
         self._command_cooldowns = {}
         self._cooldown_duration = 2  # 2 seconds between commands per user
-    
+
         # Live monitor state
         self._live_monitors = {}  # user_id -> {'active': bool, 'task': asyncio.Task}
         self._packet_buffer = []  # Store recent packets for live display
         self._max_packet_buffer = 50  # Keep last 50 packets
-    
+        self._packet_buffer_lock = asyncio.Lock()  # Thread safety for packet buffer
+
     async def handle_command(self, message: discord.Message) -> bool:
         """Route command to appropriate handler with rate limiting"""
         content = message.content.strip()
-        
+
         # Rate limiting check
         user_id = message.author.id
         now = time.time()
-        
+
         if user_id in self._command_cooldowns:
             if now - self._command_cooldowns[user_id] < self._cooldown_duration:
-                await self._safe_send(message.channel, "⏰ Please wait a moment before using another command.")
+                await self._safe_send(
+                    message.channel, 
+                    "⏰ Please wait a moment before using another command."
+                )
                 return True
-        
+
         # Update cooldown (only after successful command execution)
         # We'll move this to after the command is executed
-        
+
         for cmd, handler in self.commands.items():
             if content.startswith(cmd):
                 try:
@@ -346,21 +397,21 @@ class CommandHandler:
                     self._command_cooldowns[user_id] = now
                     return True
                 except Exception as e:
-                    logger.error(f"Error handling command {cmd}: {e}")
+                    logger.error("Error handling command %s: %s", cmd, e)
                     await self._safe_send(message.channel, f"❌ Error executing command: {e}")
                     return True
-        
+
         return False
-    
+
     def _get_cached_data(self, key: str, fetch_func, *args, **kwargs):
         """Get data from cache or fetch if not available"""
         now = time.time()
-        
-        if (key in self._node_cache and 
-            key in self._cache_timestamps and 
+
+        if (key in self._node_cache and
+            key in self._cache_timestamps and
             now - self._cache_timestamps[key] < self._cache_ttl):
             return self._node_cache[key]
-        
+
         # Fetch fresh data
         try:
             data = fetch_func(*args, **kwargs)
@@ -368,58 +419,59 @@ class CommandHandler:
             self._cache_timestamps[key] = now
             return data
         except Exception as e:
-            logger.error(f"Error fetching data for cache key {key}: {e}")
+            logger.error("Error fetching data for cache key %s: %s", key, e)
             # Return cached data if available, even if stale
             return self._node_cache.get(key, [])
-    
+
     def clear_cache(self):
         """Clear all cached data"""
         self._node_cache.clear()
         self._cache_timestamps.clear()
         logger.info("Command handler cache cleared")
-    
-    def add_packet_to_buffer(self, packet_info: dict):
-        """Add packet information to the live monitor buffer"""
+
+    async def add_packet_to_buffer(self, packet_info: dict):
+        """Add packet information to the live monitor buffer (thread-safe)"""
         try:
             # Add timestamp
             packet_info['timestamp'] = datetime.utcnow().isoformat()
-            
-            # Add to buffer
-            self._packet_buffer.append(packet_info)
-            
-            # Keep only the last N packets
-            if len(self._packet_buffer) > self._max_packet_buffer:
-                self._packet_buffer.pop(0)
-                
+
+            # Add to buffer with lock
+            async with self._packet_buffer_lock:
+                self._packet_buffer.append(packet_info)
+
+                # Keep only the last N packets
+                if len(self._packet_buffer) > self._max_packet_buffer:
+                    self._packet_buffer.pop(0)
+
         except Exception as e:
-            logger.error(f"Error adding packet to buffer: {e}")
-    
+            logger.error("Error adding packet to buffer: %s", e)
+
     def calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate distance between two coordinates in meters using Haversine formula"""
         try:
             import math
-            
+
             # Convert to radians
             lat1_rad = math.radians(lat1)
             lon1_rad = math.radians(lon1)
             lat2_rad = math.radians(lat2)
             lon2_rad = math.radians(lon2)
-            
+
             # Haversine formula
             dlat = lat2_rad - lat1_rad
             dlon = lon2_rad - lon1_rad
             a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
             c = 2 * math.asin(math.sqrt(a))
-            
+
             # Earth's radius in meters
             earth_radius = 6371000
             distance = earth_radius * c
-            
+
             return distance
         except Exception as e:
-            logger.error(f"Error calculating distance: {e}")
+            logger.error("Error calculating distance: %s", e)
             return 0.0
-    
+
     async def cmd_help(self, message: discord.Message):
         """Show help information"""
         embed = discord.Embed(
@@ -428,9 +480,12 @@ class CommandHandler:
             color=0x00ff00,
             timestamp=get_utc_time()
         )
-        embed.set_thumbnail(url="https://raw.githubusercontent.com/meshtastic/firmware/master/docs/assets/logo/meshtastic-logo.png")
+        embed.set_thumbnail(
+            url="https://raw.githubusercontent.com/meshtastic/firmware/master/"
+                "docs/assets/logo/meshtastic-logo.png"
+        )
         embed.set_footer(text="🌍 UTC Time | Use $help <command> for detailed info")
-        
+
         # Basic Commands
         embed.add_field(
             name="📡 **Basic Commands**",
@@ -444,7 +499,7 @@ class CommandHandler:
 `ping` - Send "Pong!" to mesh network""",
             inline=False
         )
-        
+
         # Advanced Commands
         embed.add_field(
             name="🔍 **Advanced Commands**",
@@ -454,7 +509,7 @@ class CommandHandler:
 `$trace <node_name>` - Trace route to a specific node""",
             inline=False
         )
-        
+
         # Epic Analytics Commands
         embed.add_field(
             name="📊 **Epic Analytics**",
@@ -463,14 +518,14 @@ class CommandHandler:
 `$art` - ASCII network art""",
             inline=False
         )
-        
+
         # Admin Commands
         embed.add_field(
             name="🔧 **Admin Commands**",
             value="""`$debug` - Show debug information""",
             inline=False
         )
-        
+
         embed.add_field(
             name="💡 **Command Examples**",
             value="""`$send John Hello there!`
@@ -479,95 +534,125 @@ class CommandHandler:
 `ping` - Test mesh connectivity""",
             inline=False
         )
-        
+
         embed.set_footer(text="Use any command to get started!")
-        
+
         await message.channel.send(embed=embed)
-    
+
     async def cmd_send_primary(self, message: discord.Message):
         """Send message to primary channel (renamed from $sendprimary to $txt)"""
         content = message.content
         if ' ' not in content:
             await self._safe_send(message.channel, "❌ Please provide a message to send.")
             return
-        
+
         message_text = content[content.find(' ')+1:][:225]
         if not message_text.strip():
             await self._safe_send(message.channel, "❌ Message cannot be empty.")
             return
-        
-        await self._safe_send(message.channel, f"📤 Sending to primary channel:\n```{message_text}```")
+
+        await self._safe_send(
+            message.channel, 
+            f"📤 Sending to primary channel:\n```{message_text}```"
+        )
         self.discord_to_mesh.put(message_text)
-    
+
     async def cmd_send_node(self, message: discord.Message):
         """Send message to specific node using fuzzy name matching"""
         content = message.content
-        
+
         if not content.startswith('$send '):
             await self._safe_send(message.channel, "❌ Use format: `$send <longname> <message>`")
             return
-        
+
         try:
             # Extract node name and message
             parts = content.split(' ', 2)
             if len(parts) < 3:
                 await self._safe_send(message.channel, "❌ Use format: `$send <longname> <message>`")
                 return
-            
+
             node_name = parts[1]
             message_text = parts[2][:225]
-            
+
             if not message_text.strip():
                 await self._safe_send(message.channel, "❌ Message cannot be empty.")
                 return
-            
+
             # Find node by name using fuzzy matching
             try:
-                logger.info(f"Searching for node with name: '{node_name}'")
+                logger.info("Searching for node with name: '%s'", node_name)
                 node = self.database.find_node_by_name(node_name)
                 if not node:
-                    await self._safe_send(message.channel, f"❌ No node found with name '{node_name}'. Try using `$nodes` to see available nodes.")
+                    await self._safe_send(
+                        message.channel, 
+                        f"❌ No node found with name '{node_name}'. "
+                        f"Try using `$nodes` to see available nodes."
+                    )
                     return
-                
-                logger.info(f"Found node: {node['long_name']} with ID: {node['node_id']}")
+
+                logger.info("Found node: %s with ID: %s", node['long_name'], node['node_id'])
             except Exception as db_error:
-                logger.error(f"Database error finding node by name: {db_error}")
+                logger.error("Database error finding node by name: %s", db_error)
                 await self._safe_send(message.channel, "❌ Error searching for node in database.")
                 return
-            
+
             # Clean the node ID (remove any prefixes like '!' that Meshtastic doesn't expect)
             clean_node_id = node['node_id'].lstrip('!')
-            
+
             # Log the node data for debugging
-            logger.info(f"Node data: {node}")
-            logger.info(f"Original node_id: '{node['node_id']}', Cleaned: '{clean_node_id}'")
-            
+            logger.info("Node data: %s", node)
+            logger.info("Original node_id: '%s', Cleaned: '%s'", node['node_id'], clean_node_id)
+
             # Try to convert to integer format that Meshtastic expects
             try:
                 # Convert hex string to integer (this is what Meshtastic typically expects)
                 node_id_int = int(clean_node_id, 16)
-                logger.info(f"Converted to integer: {node_id_int}")
+                logger.info("Converted to integer: %s", node_id_int)
                 final_node_id = node_id_int
             except ValueError:
                 # If conversion fails, use the cleaned string
-                logger.info(f"Could not convert '{clean_node_id}' to integer, using string")
+                logger.info("Could not convert '%s' to integer, using string", clean_node_id)
                 final_node_id = clean_node_id
-            
-            await self._safe_send(message.channel, f"📤 Sending to node **{node['long_name']}** (ID: {final_node_id}):\n```{message_text}```")
-            self.discord_to_mesh.put(f"nodenum={final_node_id} {message_text}")
-            logger.info(f"Sent message with node ID: {final_node_id}")
-            
+
+            # Validate message doesn't contain control characters
+            if any(ord(c) < 32 and c not in '\n\r\t' for c in message_text):
+                await self._safe_send(
+                    message.channel, 
+                    "❌ Message contains invalid control characters."
+                )
+                return
+
+            # Try to add to queue with timeout
+            try:
+                self.discord_to_mesh.put(f"nodenum={final_node_id} {message_text}", timeout=1)
+                await self._safe_send(
+                    message.channel, 
+                    f"📤 Sending to node **{node['long_name']}** "
+                    f"(ID: {final_node_id}):\n```{message_text}```"
+                )
+                logger.info("Sent message with node ID: %s", final_node_id)
+            except queue.Full:
+                await self._safe_send(
+                    message.channel, 
+                    "❌ Message queue is full. Please try again later."
+                )
+                logger.warning("Discord to mesh queue is full")
+
         except Exception as e:
-            logger.error(f"Error parsing send command: {e}")
-            await self._safe_send(message.channel, "❌ Error parsing command. Use format: `$send <longname> <message>`")
-    
+            logger.error("Error parsing send command: %s", e)
+            await self._safe_send(
+                message.channel, 
+                "❌ Error parsing command. Use format: `$send <longname> <message>`"
+            )
+
     async def cmd_active_nodes(self, message: discord.Message):
         """Show active nodes from last 60 minutes"""
         try:
             # Use caching for better performance
             nodes = self._get_cached_data(
-                "active_nodes_60", 
-                self.database.get_active_nodes, 
+                "active_nodes_60",
+                self.database.get_active_nodes,
                 60
             )
             if not nodes:
@@ -577,63 +662,66 @@ class CommandHandler:
                     color=0xff6b6b,
                     timestamp=get_utc_time()
                 )
-                embed.set_thumbnail(url="https://raw.githubusercontent.com/meshtastic/firmware/master/docs/assets/logo/meshtastic-logo.png")
+                embed.set_thumbnail(
+                    url="https://raw.githubusercontent.com/meshtastic/firmware/master/"
+                        "docs/assets/logo/meshtastic-logo.png"
+                )
                 embed.set_footer(text="🌍 UTC Time | Check back later for activity")
                 await message.channel.send(embed=embed)
                 return
         except Exception as db_error:
-            logger.error(f"Database error getting active nodes: {db_error}")
+            logger.error("Database error getting active nodes: %s", db_error)
             await self._safe_send(message.channel, "❌ Error retrieving node data from database.")
             return
-        
+
         active_nodes = []
         for node in nodes:
             try:
                 node_info = self._format_node_info(node)
                 active_nodes.append(node_info)
             except Exception as e:
-                logger.error(f"Error processing node {node.get('node_id', 'Unknown')}: {e}")
+                logger.error("Error processing node %s: %s", node.get('node_id', 'Unknown'), e)
                 continue
-        
+
         response = "📡 **Active Nodes (Last 60 minutes):**\n" + "\n".join(active_nodes)
         try:
             await self._send_long_message(message.channel, response)
         except Exception as send_error:
-            logger.error(f"Error sending message to channel: {send_error}")
+            logger.error("Error sending message to channel: %s", send_error)
             await message.channel.send("❌ Error sending message to channel.")
-    
+
     async def cmd_all_nodes(self, message: discord.Message):
         """Show all known nodes"""
         try:
             # Use caching for better performance
             nodes = self._get_cached_data(
-                "all_nodes", 
+                "all_nodes",
                 self.database.get_all_nodes
             )
             if not nodes:
                 await message.channel.send("📡 No nodes available.")
                 return
         except Exception as db_error:
-            logger.error(f"Database error getting all nodes: {db_error}")
+            logger.error("Database error getting all nodes: %s", db_error)
             await message.channel.send("❌ Error retrieving node data from database.")
             return
-        
+
         node_list = []
         for node in nodes:
             try:
                 node_info = self._format_node_info(node)
                 node_list.append(node_info)
             except Exception as e:
-                logger.error(f"Error processing node {node.get('node_id', 'Unknown')}: {e}")
+                logger.error("Error processing node %s: %s", node.get('node_id', 'Unknown'), e)
                 continue
-        
+
         response = "📡 **All Known Nodes:**\n" + "\n".join(node_list)
         try:
             await self._send_long_message(message.channel, response)
         except Exception as send_error:
-            logger.error(f"Error sending message to channel: {send_error}")
+            logger.error("Error sending message to channel: %s", send_error)
             await self._safe_send(message.channel, "❌ Error sending message to channel.")
-    
+
     async def cmd_telemetry(self, message: discord.Message):
         """Show telemetry information"""
         try:
@@ -645,32 +733,39 @@ class CommandHandler:
                     color=0xff6b6b,
                     timestamp=get_utc_time()
                 )
-                embed.set_thumbnail(url="https://raw.githubusercontent.com/meshtastic/firmware/master/docs/assets/logo/meshtastic-logo.png")
+                embed.set_thumbnail(
+                    url="https://raw.githubusercontent.com/meshtastic/firmware/master/"
+                        "docs/assets/logo/meshtastic-logo.png"
+                )
                 embed.set_footer(text="🌍 UTC Time | Data collection in progress...")
                 await message.channel.send(embed=embed)
                 return
         except Exception as db_error:
-            logger.error(f"Database error getting telemetry summary: {db_error}")
-            await self._safe_send(message.channel, "❌ Error retrieving telemetry data from database.")
+            logger.error("Database error getting telemetry summary: %s", db_error)
+            await self._safe_send(
+                message.channel, 
+                "❌ Error retrieving telemetry data from database."
+            )
             return
-        
+
         # Check connection status safely
         connection_status = "❌ Disconnected"
         if self.meshtastic.iface:
             try:
-                if hasattr(self.meshtastic.iface, 'isConnected') and callable(self.meshtastic.iface.isConnected):
+                if (hasattr(self.meshtastic.iface, 'isConnected') and 
+                    callable(self.meshtastic.iface.isConnected)):
                     if self.meshtastic.iface.isConnected():
                         connection_status = "✅ Connected"
             except Exception:
                 connection_status = "❌ Disconnected"
-        
+
         embed = discord.Embed(
             title="📊 Telemetry Summary",
             description="Last 60 minutes of network telemetry data",
             color=0x00ff00,
             timestamp=get_utc_time()
         )
-        
+
         # Node statistics
         embed.add_field(
             name="📡 **Network Status**",
@@ -679,62 +774,63 @@ Active Nodes: {summary.get('active_nodes', 0)}
 Connection: {connection_status}""",
             inline=True
         )
-        
+
         # Environmental data
         env_data = ""
         if summary.get('avg_battery') is not None:
             env_data += f"🔋 Battery: {summary['avg_battery']:.1f}%\n"
         else:
             env_data += "🔋 Battery: N/A\n"
-            
+
         if summary.get('avg_temperature') is not None:
             env_data += f"🌡️ Temperature: {summary['avg_temperature']:.1f}°C\n"
         else:
             env_data += "🌡️ Temperature: N/A\n"
-            
+
         if summary.get('avg_humidity') is not None:
             env_data += f"💧 Humidity: {summary['avg_humidity']:.1f}%\n"
         else:
             env_data += "💧 Humidity: N/A\n"
-        
+
         embed.add_field(
             name="🌍 **Environmental**",
             value=env_data,
             inline=True
         )
-        
+
         # Signal quality
         signal_data = ""
         if summary.get('avg_snr') is not None:
             signal_data += f"📶 SNR: {summary['avg_snr']:.1f} dB\n"
         else:
             signal_data += "📶 SNR: N/A\n"
-            
+
         if summary.get('avg_rssi') is not None:
             signal_data += f"📡 RSSI: {summary['avg_rssi']:.1f} dBm\n"
         else:
             signal_data += "📡 RSSI: N/A\n"
-        
+
         embed.add_field(
             name="📶 **Signal Quality**",
             value=signal_data,
             inline=True
         )
-        
+
         await message.channel.send(embed=embed)
-    
+
     async def cmd_status(self, message: discord.Message):
         """Show bridge status"""
         # Check Meshtastic connection status safely
         meshtastic_status = "❌ Disconnected"
         if self.meshtastic.iface:
             try:
-                if hasattr(self.meshtastic.iface, 'isConnected') and callable(self.meshtastic.iface.isConnected):
+                if (hasattr(self.meshtastic.iface, 'isConnected') and 
+                    callable(self.meshtastic.iface.isConnected)):
                     if self.meshtastic.iface.isConnected():
                         meshtastic_status = "✅ Connected"
             except Exception:
                 meshtastic_status = "❌ Disconnected"
-        
+
         # Get database statistics
         try:
             db_stats = self.database.get_telemetry_summary(60)
@@ -743,7 +839,7 @@ Connection: {connection_status}""",
         except Exception:
             node_count = 0
             active_count = 0
-        
+
         # Determine status color and emoji
         if meshtastic_status == "✅ Connected":
             status_color = 0x00ff00
@@ -753,16 +849,19 @@ Connection: {connection_status}""",
             status_color = 0xff6b6b
             status_emoji = "🔴"
             status_text = "Service Issues Detected"
-        
+
         embed = discord.Embed(
             title=f"{status_emoji} Bridge Status",
             description=f"**{status_text}**\n*Real-time system monitoring*",
             color=status_color,
             timestamp=get_utc_time()
         )
-        embed.set_thumbnail(url="https://raw.githubusercontent.com/meshtastic/firmware/master/docs/assets/logo/meshtastic-logo.png")
+        embed.set_thumbnail(
+            url="https://raw.githubusercontent.com/meshtastic/firmware/master/"
+                "docs/assets/logo/meshtastic-logo.png"
+        )
         embed.set_footer(text="🌍 UTC Time | Last updated")
-        
+
         # Service status
         embed.add_field(
             name="🖥️ **Services**",
@@ -771,7 +870,7 @@ Meshtastic: {meshtastic_status}
 Database: ✅ Connected""",
             inline=True
         )
-        
+
         # Network status
         embed.add_field(
             name="📡 **Network**",
@@ -780,7 +879,7 @@ Active Nodes: {active_count}
 Current Time: {format_utc_time()}""",
             inline=True
         )
-        
+
         # System health
         health_score = 0
         if meshtastic_status == "✅ Connected":
@@ -789,7 +888,7 @@ Current Time: {format_utc_time()}""",
             health_score += 30
         if active_count > 0:
             health_score += 20
-        
+
         if health_score >= 80:
             health_status = "🟢 Excellent"
         elif health_score >= 60:
@@ -798,39 +897,43 @@ Current Time: {format_utc_time()}""",
             health_status = "🟠 Fair"
         else:
             health_status = "🔴 Poor"
-        
+
         embed.add_field(
             name="💚 **System Health**",
             value=f"Status: {health_status}\nScore: {health_score}/100",
             inline=True
         )
-        
+
         await message.channel.send(embed=embed)
-    
+
     async def cmd_network_topology(self, message: discord.Message):
         """Show network topology and connections with ASCII network diagram"""
         try:
             topology = self.database.get_network_topology()
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
-            
+
             embed = discord.Embed(
                 title="🌐 Network Topology",
-                description="**Mesh Network Structure & Connections**\n*Real-time network visualization*",
+                description="**Mesh Network Structure & Connections**\n"
+                           "*Real-time network visualization*",
                 color=0x0099ff,
                 timestamp=get_utc_time()
             )
-            embed.set_thumbnail(url="https://raw.githubusercontent.com/meshtastic/firmware/master/docs/assets/logo/meshtastic-logo.png")
+            embed.set_thumbnail(
+                url="https://raw.githubusercontent.com/meshtastic/firmware/master/"
+                    "docs/assets/logo/meshtastic-logo.png"
+            )
             embed.set_footer(text="🌍 UTC Time | Network analysis")
-            
+
             # Create ASCII network diagram
             ascii_network = self._create_network_diagram(nodes, topology['connections'])
-            
+
             embed.add_field(
                 name="🌳 **Network Tree Diagram**",
                 value=f"```\n{ascii_network}\n```",
                 inline=False
             )
-            
+
             # Network statistics
             embed.add_field(
                 name="📊 **Network Stats**",
@@ -840,7 +943,7 @@ Router Nodes: {topology['router_nodes']}
 Avg Hops: {topology['avg_hops']:.1f}""",
                 inline=True
             )
-            
+
             # Top connections
             if topology['connections']:
                 top_connections = topology['connections'][:5]  # Top 5 connections
@@ -849,8 +952,9 @@ Avg Hops: {topology['avg_hops']:.1f}""",
                     from_name = self.database.get_node_display_name(conn['from_node'])
                     to_name = self.database.get_node_display_name(conn['to_node'])
                     connections_text += f"**{from_name}** → **{to_name}**\n"
-                    connections_text += f"Messages: {conn['message_count']}, Hops: {conn['avg_hops']:.1f}\n\n"
-                
+                    connections_text += (f"Messages: {conn['message_count']}, "
+                                         f"Hops: {conn['avg_hops']:.1f}\n\n")
+
                 embed.add_field(
                     name="🔗 **Top Connections**",
                     value=connections_text[:1024],  # Discord field limit
@@ -862,54 +966,58 @@ Avg Hops: {topology['avg_hops']:.1f}""",
                     value="No recent connections found",
                     inline=True
                 )
-            
+
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error getting network topology: {e}")
+            logger.error("Error getting network topology: %s", e)
             await self._safe_send(message.channel, "❌ Error retrieving network topology.")
-    
+
     async def cmd_topology_tree(self, message: discord.Message):
         """Show visual tree of all radio connections"""
         try:
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
             topology = self.database.get_network_topology()
-            
+
             if not nodes:
-                await self._safe_send(message.channel, "📡 **No nodes available for topology analysis**")
+                await self._safe_send(
+                    message.channel, 
+                    "📡 **No nodes available for topology analysis**"
+                )
                 return
-            
+
             # Create readable connection tree
             connection_tree = self._create_connection_tree(nodes, topology['connections'])
-            
+
             # Add summary info
             total_nodes = len(nodes)
             active_connections = len(topology['connections'])
             avg_hops = topology.get('avg_hops', 0)
-            
+
             # Send the formatted tree
             await self._send_long_message(message.channel, connection_tree)
-            
+
             # Send summary
-            summary = f"\n📊 **Network Summary:** {total_nodes} radios | {active_connections} routes | {avg_hops:.1f} avg hops"
+            summary = (f"\n📊 **Network Summary:** {total_nodes} radios | "
+                      f"{active_connections} routes | {avg_hops:.1f} avg hops")
             await message.channel.send(summary)
-            
+
         except Exception as e:
-            logger.error(f"Error creating topology tree: {e}")
+            logger.error("Error creating topology tree: %s", e)
             await self._safe_send(message.channel, "❌ Error creating connection tree.")
-    
+
     async def cmd_message_statistics(self, message: discord.Message):
         """Show message statistics and network activity"""
         try:
             stats = self.database.get_message_statistics(hours=24)
-            
+
             embed = discord.Embed(
                 title="📊 Message Statistics",
                 description="24-hour network activity summary",
                 color=0x9b59b6,
                 timestamp=get_utc_time()
             )
-            
+
             # Basic statistics
             embed.add_field(
                 name="📈 **Activity**",
@@ -918,12 +1026,12 @@ Unique Senders: {stats.get('unique_senders', 0)}
 Unique Recipients: {stats.get('unique_recipients', 0)}""",
                 inline=True
             )
-            
+
             # Signal quality - safe formatting
             avg_hops = stats.get('avg_hops', 0) or 0
             avg_snr = stats.get('avg_snr', 0) or 0
             avg_rssi = stats.get('avg_rssi', 0) or 0
-            
+
             embed.add_field(
                 name="📶 **Signal Quality**",
                 value=f"""Avg Hops: {avg_hops:.1f}
@@ -931,14 +1039,16 @@ Avg SNR: {avg_snr:.1f} dB
 Avg RSSI: {avg_rssi:.1f} dBm""",
                 inline=True
             )
-            
+
             # Hourly distribution
             hourly_dist = stats.get('hourly_distribution', {})
             if hourly_dist:
                 # Find peak hours
-                peak_hour = max(hourly_dist.items(), key=lambda x: x[1]) if hourly_dist else ("N/A", 0)
-                quiet_hour = min(hourly_dist.items(), key=lambda x: x[1]) if hourly_dist else ("N/A", 0)
-                
+                peak_hour = (max(hourly_dist.items(), key=lambda x: x[1]) 
+                            if hourly_dist else ("N/A", 0))
+                quiet_hour = (min(hourly_dist.items(), key=lambda x: x[1]) 
+                             if hourly_dist else ("N/A", 0))
+
                 embed.add_field(
                     name="⏰ **Activity Pattern**",
                     value=f"""Peak Hour: {peak_hour[0]}:00 ({peak_hour[1]} msgs)
@@ -946,44 +1056,48 @@ Quiet Hour: {quiet_hour[0]}:00 ({quiet_hour[1]} msgs)
 Active Hours: {len(hourly_dist)}""",
                     inline=True
                 )
-            
+
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error getting message statistics: {e}")
+            logger.error("Error getting message statistics: %s", e)
             await self._safe_send(message.channel, "❌ Error retrieving message statistics.")
-    
+
     async def cmd_trace_route(self, message: discord.Message):
         """Trace route to a specific node with visual hop-by-hop path"""
         content = message.content.strip()
-        
+
         if not content.startswith('$trace '):
             await self._safe_send(message.channel, "❌ Use format: `$trace <node_name>`")
             return
-        
+
         try:
             node_name = content[7:].strip()  # Remove '$trace '
             if not node_name:
                 await self._safe_send(message.channel, "❌ Please specify a node name.")
                 return
-            
+
             # Find the target node
             target_node = self.database.find_node_by_name(node_name)
             if not target_node:
-                await self._safe_send(message.channel, f"❌ No node found with name '{node_name}'. Try using `$nodes` to see available nodes.")
+                await self._safe_send(
+                    message.channel, 
+                    f"❌ No node found with name '{node_name}'. "
+                    f"Try using `$nodes` to see available nodes."
+                )
                 return
-            
+
             # Get network topology and analyze routing
             topology = self.database.get_network_topology()
             route_path = self._analyze_route_to_node(target_node['node_id'], topology)
-            
+
             embed = discord.Embed(
                 title=f"🛣️ Trace Route to {target_node['long_name']}",
                 description=f"Analyzing network path to **{target_node['node_id']}**",
                 color=0x00bfff,
                 timestamp=get_utc_time()
             )
-            
+
             # Target node info
             embed.add_field(
                 name="🎯 **Target Node**",
@@ -993,7 +1107,7 @@ Active Hours: {len(hourly_dist)}""",
 **Last Heard:** {target_node.get('last_heard', 'Unknown')}""",
                 inline=True
             )
-            
+
             # Route path visualization
             if route_path:
                 route_text = self._format_route_path(route_path)
@@ -1002,12 +1116,14 @@ Active Hours: {len(hourly_dist)}""",
                     value=route_text,
                     inline=False
                 )
-                
+
                 # Route statistics
                 total_hops = len(route_path) - 1  # -1 because we don't count the source
-                avg_snr = sum(hop.get('snr', 0) for hop in route_path[1:]) / max(1, len(route_path) - 1)
-                avg_rssi = sum(hop.get('rssi', 0) for hop in route_path[1:]) / max(1, len(route_path) - 1)
-                
+                avg_snr = (sum(hop.get('snr', 0) for hop in route_path[1:]) / 
+                          max(1, len(route_path) - 1))
+                avg_rssi = (sum(hop.get('rssi', 0) for hop in route_path[1:]) / 
+                           max(1, len(route_path) - 1))
+
                 embed.add_field(
                     name="📊 **Route Statistics**",
                     value=f"""**Total Hops:** {total_hops}
@@ -1019,10 +1135,11 @@ Active Hours: {len(hourly_dist)}""",
             else:
                 embed.add_field(
                     name="🛤️ **Route Path**",
-                    value="❌ **No route found** - Node may be unreachable or no recent communication data available",
+                    value="❌ **No route found** - Node may be unreachable or "
+                          "no recent communication data available",
                     inline=False
                 )
-            
+
             # Network overview
             embed.add_field(
                 name="🌐 **Network Overview**",
@@ -1031,13 +1148,16 @@ Active Hours: {len(hourly_dist)}""",
 **Network Avg Hops:** {topology['avg_hops']:.1f}""",
                 inline=True
             )
-            
+
             # Connection quality to target
-            connections_to_target = [conn for conn in topology['connections'] if conn['to_node'] == target_node['node_id']]
+            connections_to_target = [
+                conn for conn in topology['connections'] 
+                if conn['to_node'] == target_node['node_id']
+            ]
             if connections_to_target:
                 best_connection = max(connections_to_target, key=lambda x: x['message_count'])
                 from_name = self.database.get_node_display_name(best_connection['from_node'])
-                
+
                 embed.add_field(
                     name="🔗 **Best Connection**",
                     value=f"""**From:** {from_name}
@@ -1046,14 +1166,14 @@ Active Hours: {len(hourly_dist)}""",
 **Avg SNR:** {best_connection['avg_snr']:.1f} dB""",
                     inline=True
                 )
-            
+
             embed.set_footer(text=f"Route analysis completed at")
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error tracing route: {e}")
+            logger.error("Error tracing route: %s", e)
             await self._safe_send(message.channel, "❌ Error tracing route to node.")
-    
+
     def _analyze_route_to_node(self, target_node_id: str, topology: dict) -> list:
         """Analyze the route to a specific node based on message data"""
         try:
@@ -1062,17 +1182,17 @@ Active Hours: {len(hourly_dist)}""",
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT from_node_id, to_node_id, hops_away, snr, rssi, timestamp
-                    FROM messages 
-                    WHERE to_node_id = ? 
-                    ORDER BY timestamp DESC 
+                    FROM messages
+                    WHERE to_node_id = ?
+                    ORDER BY timestamp DESC
                     LIMIT 100
                 """, (target_node_id,))
-                
+
                 messages = cursor.fetchall()
-            
+
             if not messages:
                 return []
-            
+
             # Find the most common path by analyzing message patterns
             # Group messages by hops_away to understand the path
             hop_groups = {}
@@ -1081,21 +1201,21 @@ Active Hours: {len(hourly_dist)}""",
                 if hops not in hop_groups:
                     hop_groups[hops] = []
                 hop_groups[hops].append(msg)
-            
+
             # Build route path from hop groups
             route_path = []
             sorted_hops = sorted(hop_groups.keys())
-            
+
             for hop_count in sorted_hops:
                 # Get the most recent message for this hop count
                 recent_msg = max(hop_groups[hop_count], key=lambda x: x[5])  # timestamp
                 from_node_id = recent_msg[0]
                 snr = recent_msg[3]
                 rssi = recent_msg[4]
-                
+
                 # Get node display name
                 from_name = self.database.get_node_display_name(from_node_id)
-                
+
                 route_path.append({
                     'node_id': from_node_id,
                     'node_name': from_name,
@@ -1103,7 +1223,7 @@ Active Hours: {len(hourly_dist)}""",
                     'snr': snr,
                     'rssi': rssi
                 })
-            
+
             # Add target node at the end
             target_name = self.database.get_node_display_name(target_node_id)
             route_path.append({
@@ -1113,27 +1233,27 @@ Active Hours: {len(hourly_dist)}""",
                 'snr': None,
                 'rssi': None
             })
-            
+
             return route_path
-            
+
         except Exception as e:
-            logger.error(f"Error analyzing route to node {target_node_id}: {e}")
+            logger.error("Error analyzing route to node %s: %s", target_node_id, e)
             return []
-    
+
     def _format_route_path(self, route_path: list) -> str:
         """Format the route path for display with visual indicators"""
         if not route_path:
             return "No route data available"
-        
+
         path_lines = []
-        
+
         for i, hop in enumerate(route_path):
             node_name = hop['node_name']
             node_id = hop['node_id']
             hops_away = hop['hops_away']
             snr = hop.get('snr')
             rssi = hop.get('rssi')
-            
+
             # Determine hop indicator
             if i == 0:
                 # Source node
@@ -1147,7 +1267,7 @@ Active Hours: {len(hourly_dist)}""",
                 # Intermediate hop
                 hop_indicator = f"🔄 {i}"
                 hop_text = f"HOP {i}"
-            
+
             # Format signal quality
             signal_info = ""
             if snr is not None and rssi is not None:
@@ -1158,24 +1278,24 @@ Active Hours: {len(hourly_dist)}""",
                 signal_info = f" {signal_quality} SNR:{snr:.1f}dB"
             elif rssi is not None:
                 signal_info = f" 📶 RSSI:{rssi:.1f}dBm"
-            
+
             # Format the hop line
             hop_line = f"{hop_indicator} **{hop_text}:** {node_name}"
             if len(node_id) > 8:  # Only show short ID if it's long
                 hop_line += f" (`{node_id[:8]}...`)"
             else:
                 hop_line += f" (`{node_id}`)"
-            
+
             hop_line += signal_info
-            
+
             path_lines.append(hop_line)
-            
+
             # Add connection line (except for the last hop)
             if i < len(route_path) - 1:
                 path_lines.append("    ⬇️")
-        
+
         return "\n".join(path_lines)
-    
+
     def _get_signal_quality_icon(self, snr: float) -> str:
         """Get signal quality icon based on SNR"""
         if snr > 10:
@@ -1186,7 +1306,7 @@ Active Hours: {len(hourly_dist)}""",
             return "🟠"  # Fair
         else:
             return "🔴"  # Poor
-    
+
     def _assess_route_quality(self, avg_snr: float, total_hops: int) -> str:
         """Assess overall route quality"""
         if avg_snr > 10 and total_hops <= 2:
@@ -1197,24 +1317,24 @@ Active Hours: {len(hourly_dist)}""",
             return "🟠 Fair"
         else:
             return "🔴 Poor"
-    
+
     async def cmd_leaderboard(self, message: discord.Message):
         """Show network performance leaderboards"""
         try:
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
             stats = self.database.get_message_statistics(24)
-            
+
             if not nodes:
                 await self._safe_send(message.channel, "📡 No nodes available for leaderboard.")
                 return
-            
+
             embed = discord.Embed(
                 title="🏆 Network Performance Leaderboard",
                 description="Top performing nodes and network statistics",
                 color=0xffd700,
                 timestamp=get_utc_time()
             )
-            
+
             # Most Active Nodes (by message count)
             active_leaderboard = ""
             if stats.get('total_messages', 0) > 0:
@@ -1224,51 +1344,73 @@ Active Hours: {len(hourly_dist)}""",
                 active_leaderboard += "• Check back after more activity!\n"
             else:
                 active_leaderboard = "📊 **Most Active Nodes**\nNo message data available yet"
-            
+
             embed.add_field(
                 name="🏆 **Activity Leaders**",
                 value=active_leaderboard,
                 inline=True
             )
-            
+
             # Best Signal Quality
             signal_leaderboard = ""
             nodes_with_signal = [n for n in nodes if n.get('snr') is not None]
             if nodes_with_signal:
                 # Sort by SNR (highest first)
-                sorted_nodes = sorted(nodes_with_signal, key=lambda x: x.get('snr', 0), reverse=True)
+                sorted_nodes = sorted(
+                    nodes_with_signal, key=lambda x: x.get('snr', 0), reverse=True
+                )
                 signal_leaderboard = "📶 **Best Signal Quality**\n"
                 for i, node in enumerate(sorted_nodes[:5]):
-                    medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "🏅"
-                    signal_leaderboard += f"{medal} **{node['long_name']}** - {node.get('snr', 0):.1f} dB\n"
+                    if i == 0:
+                        medal = "🥇"
+                    elif i == 1:
+                        medal = "🥈"
+                    elif i == 2:
+                        medal = "🥉"
+                    else:
+                        medal = "🏅"
+                    signal_leaderboard += (
+                        f"{medal} **{node['long_name']}** - {node.get('snr', 0):.1f} dB\n"
+                    )
             else:
-                signal_leaderboard = "📶 **Best Signal Quality**\nNo signal data available"
-            
+                signal_leaderboard = (
+                    "📶 **Best Signal Quality**\nNo signal data available"
+                )
+
             embed.add_field(
                 name="📡 **Signal Champions**",
                 value=signal_leaderboard,
                 inline=True
             )
-            
+
             # Longest Uptime (simplified)
             uptime_leaderboard = "⏰ **Longest Active**\n"
             active_nodes = [n for n in nodes if n.get('last_heard')]
             if active_nodes:
                 # Sort by last_heard (most recent first)
-                sorted_uptime = sorted(active_nodes, key=lambda x: x.get('last_heard', ''), reverse=True)
+                sorted_uptime = sorted(
+                    active_nodes, key=lambda x: x.get('last_heard', ''), reverse=True
+                )
                 for i, node in enumerate(sorted_uptime[:5]):
-                    medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "🏅"
+                    if i == 0:
+                        medal = "🥇"
+                    elif i == 1:
+                        medal = "🥈"
+                    elif i == 2:
+                        medal = "🥉"
+                    else:
+                        medal = "🏅"
                     last_heard = node.get('last_heard', 'Unknown')
                     uptime_leaderboard += f"{medal} **{node['long_name']}** - {last_heard}\n"
             else:
                 uptime_leaderboard += "No activity data available"
-            
+
             embed.add_field(
                 name="⏰ **Uptime Champions**",
                 value=uptime_leaderboard,
                 inline=True
             )
-            
+
             # Network Statistics
             total_nodes = len(nodes)
             active_count = 0
@@ -1279,9 +1421,9 @@ Active Hours: {len(hourly_dist)}""",
                         if last_heard > datetime.now() - timedelta(hours=1):
                             active_count += 1
                     except (ValueError, TypeError) as e:
-                        logger.warning(f"Error parsing last_heard for node {n.get('long_name', 'Unknown')}: {e}")
+                        logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)
                         continue
-            
+
             embed.add_field(
                 name="📊 **Network Stats**",
                 value=f"""Total Nodes: {total_nodes}
@@ -1290,37 +1432,37 @@ Total Messages: {stats.get('total_messages', 0)}
 Unique Senders: {stats.get('unique_senders', 0)}""",
                 inline=False
             )
-            
+
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error creating leaderboard: {e}")
+            logger.error("Error creating leaderboard: %s", e)
             await self._safe_send(message.channel, "❌ Error creating leaderboard.")
-    
+
     async def cmd_network_art(self, message: discord.Message):
         """Create ASCII network art"""
         try:
             nodes = self._get_cached_data("all_nodes", self.database.get_all_nodes)
             topology = self.database.get_network_topology()
-            
+
             if not nodes:
                 await self._safe_send(message.channel, "📡 No nodes available for network art.")
                 return
-            
+
             embed = discord.Embed(
                 title="🎨 Network Art",
                 description="ASCII art representation of your mesh network",
                 color=0xff69b4,
                 timestamp=get_utc_time()
             )
-            
+
             # Create simple ASCII network diagram
             art_lines = []
             art_lines.append("```")
             art_lines.append("🌐 MESHTASTIC NETWORK ART 🌐")
             art_lines.append("=" * 40)
             art_lines.append("")
-            
+
             # Show active nodes as a simple diagram
             active_nodes = []
             for n in nodes:
@@ -1330,9 +1472,9 @@ Unique Senders: {stats.get('unique_senders', 0)}""",
                         if last_heard > datetime.now() - timedelta(hours=1):
                             active_nodes.append(n)
                     except (ValueError, TypeError) as e:
-                        logger.warning(f"Error parsing last_heard for node {n.get('long_name', 'Unknown')}: {e}")
+                        logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)
                         continue
-            
+
             if active_nodes:
                 art_lines.append("🟢 ACTIVE NODES:")
                 for i, node in enumerate(active_nodes[:8]):  # Limit to 8 for ASCII art
@@ -1347,14 +1489,14 @@ Unique Senders: {stats.get('unique_senders', 0)}""",
                     else:
                         status_icon = "⚪"
                     art_lines.append(f"  {status_icon} {node['long_name'][:15]}")
-                
+
                 if len(active_nodes) > 8:
                     art_lines.append(f"  ... and {len(active_nodes) - 8} more")
             else:
                 art_lines.append("⚪ No active nodes")
-            
+
             art_lines.append("")
-            
+
             # Show connections as lines
             if topology.get('connections'):
                 art_lines.append("🔗 CONNECTIONS:")
@@ -1362,30 +1504,30 @@ Unique Senders: {stats.get('unique_senders', 0)}""",
                     from_name = self.database.get_node_display_name(conn['from_node'])[:10]
                     to_name = self.database.get_node_display_name(conn['to_node'])[:10]
                     art_lines.append(f"  {from_name} ─── {to_name}")
-                
+
                 if len(topology['connections']) > 5:
                     art_lines.append(f"  ... and {len(topology['connections']) - 5} more")
             else:
                 art_lines.append("🔗 No connections detected")
-            
+
             art_lines.append("")
             art_lines.append("=" * 40)
             art_lines.append("```")
-            
+
             # Create the art
             art_text = "\n".join(art_lines)
-            
+
             embed.add_field(
                 name="🎨 **Network Diagram**",
                 value=art_text,
                 inline=False
             )
-            
+
             # Network stats for the art
             total_nodes = len(nodes)
             active_count = len(active_nodes)
             connection_count = len(topology.get('connections', []))
-            
+
             embed.add_field(
                 name="📊 **Art Stats**",
                 value=f"""Total Nodes: {total_nodes}
@@ -1394,125 +1536,131 @@ Connections: {connection_count}
 Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                 inline=True
             )
-            
+
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error creating network art: {e}")
+            logger.error("Error creating network art: %s", e)
             await self._safe_send(message.channel, "❌ Error creating network art.")
-    
+
     async def cmd_live_monitor(self, message: discord.Message):
         """Real-time network monitor showing live packet activity"""
         user_id = message.author.id
-        
+
         # Check if user already has a live monitor running
         if user_id in self._live_monitors and self._live_monitors[user_id]['active']:
             # Stop the existing monitor
             try:
-                logger.debug(f"Stopping live monitor for user {user_id}")
+                logger.debug("Stopping live monitor for user %s", user_id)
                 self._live_monitors[user_id]['active'] = False
-                
+
                 if 'task' in self._live_monitors[user_id]:
                     task = self._live_monitors[user_id]['task']
                     try:
                         if not task.done():
                             task.cancel()
-                            logger.debug(f"Cancelled live monitor task for user {user_id}")
+                            logger.debug("Cancelled live monitor task for user %s", user_id)
                         else:
-                            logger.debug(f"Live monitor task for user {user_id} was already done")
+                            logger.debug("Live monitor task for user %s was already done", user_id)
                     except Exception as task_error:
-                        logger.error(f"Error cancelling task for user {user_id}: {task_error}")
+                        logger.error("Error cancelling task for user %s: %s", user_id, task_error)
                         # Continue with cleanup even if task cancellation fails
-                
+
                 await message.channel.send("🛑 **Live monitor stopped**")
                 del self._live_monitors[user_id]
-                logger.debug(f"Successfully stopped live monitor for user {user_id}")
+                logger.debug("Successfully stopped live monitor for user %s", user_id)
                 return
             except Exception as e:
-                logger.error(f"Error stopping live monitor for user {user_id}: {type(e).__name__}: {str(e)}")
-                logger.error(f"Exception details: {repr(e)}")
+                logger.error("Error stopping live monitor for user %s: %s: %s", user_id, type(e).__name__, str(e))
+                logger.error("Exception details: %s", repr(e))
                 await message.channel.send("🛑 **Live monitor stopped** (with errors)")
                 # Clean up even if there was an error
                 if user_id in self._live_monitors:
                     del self._live_monitors[user_id]
                 return
-        
+
         # Start live monitor (cooldown is handled globally in handle_command)
-        
+
         embed = discord.Embed(
             title="📡 Live Network Monitor",
-            description="**Starting live packet monitoring...**\n\n*Monitoring will run for 1 minute or until you type `$live` again*",
+            description=(
+                "**Starting live packet monitoring...**\n\n"
+                "*Monitoring will run for 1 minute or until you type `$live` again*"
+            ),
             color=0x00ff00,
             timestamp=get_utc_time()
         )
         embed.add_field(
             name="📊 **What you'll see:**",
-            value="• Packet types and sources\n• Message content previews\n• Telemetry data summaries\n• Traceroute information\n• Signal quality metrics",
+            value=(
+                "• Packet types and sources\n• Message content previews\n"
+                "• Telemetry data summaries\n• Traceroute information\n• Signal quality metrics"
+            ),
             inline=False
         )
         embed.set_footer(text=f"Requested by {message.author.display_name}")
-        
+
         status_message = await message.channel.send(embed=embed)
-        
+
         # Start the live monitoring task
         try:
             task = asyncio.create_task(self._run_live_monitor(message.channel, user_id, status_message))
             self._live_monitors[user_id] = {'active': True, 'task': task}
-            logger.info(f"Started live monitor for user {message.author.display_name} ({user_id})")
+            logger.info("Started live monitor for user %s (%s)", message.author.display_name, user_id)
         except Exception as e:
-            logger.error(f"Error starting live monitor for user {user_id}: {e}")
+            logger.error("Error starting live monitor for user %s: %s", user_id, e)
             await message.channel.send(f"❌ **Error starting live monitor:** {str(e)}")
             return
-    
+
     async def _run_live_monitor(self, channel, user_id, status_message):
         """Run the live monitor for 10 seconds"""
         try:
             start_time = time.time()
             last_update = start_time
             packet_count = 0
-            
+
             while time.time() - start_time < 60:  # 1 minute timeout
                 if user_id not in self._live_monitors or not self._live_monitors[user_id]['active']:
                     break
-                
+
                 # Check for new packets in buffer
                 current_packets = len(self._packet_buffer)
                 if current_packets > packet_count:
                     # New packets available, update display
                     new_packets = self._packet_buffer[packet_count:]
                     packet_count = current_packets
-                    
+
                     # Update status message with new packets
                     await self._update_live_display(channel, status_message, new_packets, time.time() - start_time)
                     last_update = time.time()
-                
+
                 # Check every 0.5 seconds
                 await asyncio.sleep(0.5)
-            
+
             # Final update
             if user_id in self._live_monitors and self._live_monitors[user_id]['active']:
                 await self._finalize_live_monitor(channel, status_message, packet_count, time.time() - start_time)
-                
+
         except asyncio.CancelledError:
-            logger.info(f"Live monitor cancelled for user {user_id}")
+            logger.info("Live monitor cancelled for user %s", user_id)
         except Exception as e:
-            logger.error(f"Error in live monitor for user {user_id}: {type(e).__name__}: {str(e)}")
-            logger.error(f"Exception details: {repr(e)}")
+            logger.error("Error in live monitor for user %s: %s: %s", user_id, type(e).__name__, str(e))
+            logger.error("Exception details: %s", repr(e))
             try:
                 await channel.send(f"❌ **Live monitor error:** {str(e)}")
             except Exception as send_error:
-                logger.error(f"Error sending error message: {send_error}")
+                logger.error("Error sending error message: %s", send_error)
         finally:
             # Clean up
             if user_id in self._live_monitors:
                 del self._live_monitors[user_id]
-    
+
     async def _update_live_display(self, channel, status_message, new_packets, elapsed_time):
         """Update the live monitor display with new packets"""
         try:
             if not new_packets:
                 return
-            
+
             # Create embed for new packets
             embed = discord.Embed(
                 title="📡 Live Network Monitor",
@@ -1520,7 +1668,7 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                 color=0x00bfff,
                 timestamp=datetime.utcnow()
             )
-            
+
             # Add packet information
             packet_text = ""
             for packet in new_packets[-10:]:  # Show last 10 packets
@@ -1530,7 +1678,7 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                 hops = packet.get('hops', 0)
                 snr = packet.get('snr', 'N/A')
                 rssi = packet.get('rssi', 'N/A')
-                
+
                 # Format packet info
                 if packet_type == 'text':
                     text_preview = packet.get('text', '')[:30]
@@ -1550,24 +1698,24 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                     packet_text += f"🚶 **{from_name}** moved {distance_moved:.1f}m\n"
                 else:
                     packet_text += f"📦 **{from_name}** ({portnum}) - {packet_type}\n"
-                
+
                 # Add signal info
                 packet_text += f"   └─ Hops: {hops} | SNR: {snr} | RSSI: {rssi}\n\n"
-            
+
             if packet_text:
                 embed.add_field(
                     name="📦 **Recent Packets:**",
                     value=packet_text[:1024],  # Discord field limit
                     inline=False
                 )
-            
+
             embed.set_footer(text="Type `$live` again to stop monitoring")
-            
+
             await status_message.edit(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error updating live display: {e}")
-    
+            logger.error("Error updating live display: %s", e)
+
     async def _finalize_live_monitor(self, channel, status_message, total_packets, elapsed_time):
         """Finalize the live monitor with summary"""
         try:
@@ -1577,102 +1725,109 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
                 color=0x00ff00,
                 timestamp=datetime.utcnow()
             )
-            
+
             embed.add_field(
                 name="📊 **Summary:**",
-                value=f"Total Packets: {total_packets}\nDuration: {elapsed_time:.1f}s\nAverage Rate: {total_packets/elapsed_time:.1f} packets/sec",
+                value=(
+                    f"Total Packets: {total_packets}\n"
+                    f"Duration: {elapsed_time:.1f}s\n"
+                    f"Average Rate: {total_packets/elapsed_time:.1f} packets/sec"
+                ),
                 inline=False
             )
-            
+
             embed.set_footer(text="Live monitoring session ended")
-            
+
             await status_message.edit(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error finalizing live monitor: {e}")
-    
+            logger.error("Error finalizing live monitor: %s", e)
+
     async def cmd_clear_database(self, message: discord.Message):
         """Clear database and force fresh start"""
         try:
             # Clear all data from database
             with self.database._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Clear all tables
                 cursor.execute("DELETE FROM telemetry")
-                cursor.execute("DELETE FROM positions") 
+                cursor.execute("DELETE FROM positions")
                 cursor.execute("DELETE FROM messages")
                 cursor.execute("DELETE FROM nodes")
-                
+
                 # Reset auto-increment counters
                 cursor.execute("DELETE FROM sqlite_sequence WHERE name IN ('telemetry', 'positions', 'messages')")
-                
+
                 conn.commit()
-                
+
                 logger.info("Database cleared by user command")
-            
+
             # Clear command handler cache
             self.clear_cache()
-            
+
             embed = discord.Embed(
                 title="🗑️ Database Cleared",
                 description="All data has been cleared from the database",
                 color=0xff6b6b,
                 timestamp=get_utc_time()
             )
-            
+
             embed.add_field(
                 name="✅ **Cleared Tables**",
                 value="• Nodes\n• Telemetry\n• Positions\n• Messages\n• Cache",
                 inline=True
             )
-            
+
             embed.add_field(
                 name="🔄 **Next Steps**",
-                value="The bot will now collect fresh data from the mesh network. Use `$nodes` to see new data as it's collected.",
+                value=(
+                    "The bot will now collect fresh data from the mesh network. "
+                    "Use `$nodes` to see new data as it's collected."
+                ),
                 inline=True
             )
-            
+
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error clearing database: {e}")
+            logger.error("Error clearing database: %s", e)
             await self._safe_send(message.channel, f"❌ Error clearing database: {e}")
-    
+
     async def cmd_debug_info(self, message: discord.Message):
         """Show debug information about database and data storage"""
         try:
             # Get database counts
             with self.database._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Count records in each table
                 cursor.execute("SELECT COUNT(*) FROM nodes")
                 node_count = cursor.fetchone()[0]
-                
+
                 cursor.execute("SELECT COUNT(*) FROM telemetry")
                 telemetry_count = cursor.fetchone()[0]
-                
+
                 cursor.execute("SELECT COUNT(*) FROM positions")
                 position_count = cursor.fetchone()[0]
-                
+
                 cursor.execute("SELECT COUNT(*) FROM messages")
                 message_count = cursor.fetchone()[0]
-            
+
             # Get some sample data
             nodes = self.database.get_all_nodes()
             recent_telemetry = []
             if nodes:
                 # Get recent telemetry for first node
                 recent_telemetry = self.database.get_telemetry_history(nodes[0]['node_id'], hours=1, limit=5)
-            
+
             embed = discord.Embed(
                 title="🔍 Debug Information",
                 description="Database and data storage status",
                 color=0x00bfff,
                 timestamp=get_utc_time()
             )
-            
+
             embed.add_field(
                 name="📊 **Database Counts**",
                 value=f"""Nodes: {node_count}
@@ -1681,7 +1836,7 @@ Positions: {position_count}
 Messages: {message_count}""",
                 inline=True
             )
-            
+
             embed.add_field(
                 name="🔄 **Cache Status**",
                 value=f"""Cache Entries: {len(self._node_cache)}
@@ -1689,7 +1844,7 @@ Cache TTL: {self._cache_ttl}s
 Last Refresh: {time.time() - self.meshtastic.last_node_refresh:.1f}s ago""",
                 inline=True
             )
-            
+
             if nodes:
                 embed.add_field(
                     name="📡 **Sample Node Data**",
@@ -1700,7 +1855,7 @@ Has Battery: {nodes[0].get('battery_level') is not None}
 Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     inline=False
                 )
-            
+
             if recent_telemetry:
                 embed.add_field(
                     name="📈 **Recent Telemetry**",
@@ -1713,35 +1868,38 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     value="No recent telemetry data found",
                     inline=False
                 )
-            
+
             await message.channel.send(embed=embed)
-            
+
         except Exception as e:
-            logger.error(f"Error getting debug info: {e}")
+            logger.error("Error getting debug info: %s", e)
             await self._safe_send(message.channel, f"❌ Error getting debug info: {e}")
-    
+
     def _create_signal_tree(self, excellent_nodes, good_nodes, poor_nodes, unknown_nodes):
         """Create ASCII tree for signal strength visualization"""
         tree_lines = []
         tree_lines.append("🔥 SIGNAL STRENGTH TREE")
         tree_lines.append("=" * 50)
         tree_lines.append("")
-        
+
         # Root of tree
         tree_lines.append("🌐 Mesh Network")
         tree_lines.append("│")
-        
+
         # Excellent signal branch
         if excellent_nodes:
             tree_lines.append("├─ 🟢 Excellent Signal")
             for i, node in enumerate(excellent_nodes[:8]):  # Limit to 8 for space
                 if i == len(excellent_nodes[:8]) - 1 and len(excellent_nodes) > 8:
-                    tree_lines.append(f"│  └─ {node['long_name'][:20]} ({node.get('snr', 0):.1f}dB) +{len(excellent_nodes)-8} more")
+                    tree_lines.append(
+                        f"│  └─ {node['long_name'][:20]} ({node.get('snr', 0):.1f}dB) "
+                        f"+{len(excellent_nodes)-8} more"
+                    )
                 else:
                     tree_lines.append(f"│  ├─ {node['long_name'][:20]} ({node.get('snr', 0):.1f}dB)")
         else:
             tree_lines.append("├─ 🟢 Excellent Signal (None)")
-        
+
         # Good signal branch
         if good_nodes:
             tree_lines.append("├─ 🟡 Good Signal")
@@ -1752,7 +1910,7 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     tree_lines.append(f"│  ├─ {node['long_name'][:20]} ({node.get('snr', 0):.1f}dB)")
         else:
             tree_lines.append("├─ 🟡 Good Signal (None)")
-        
+
         # Poor signal branch
         if poor_nodes:
             tree_lines.append("├─ 🔴 Poor Signal")
@@ -1763,7 +1921,7 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     tree_lines.append(f"│  ├─ {node['long_name'][:20]} ({node.get('snr', 0):.1f}dB)")
         else:
             tree_lines.append("├─ 🔴 Poor Signal (None)")
-        
+
         # Unknown signal branch
         if unknown_nodes:
             tree_lines.append("└─ ⚪ Unknown Signal")
@@ -1774,19 +1932,19 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     tree_lines.append(f"   ├─ {node['long_name'][:20]}")
         else:
             tree_lines.append("└─ ⚪ Unknown Signal (None)")
-        
+
         tree_lines.append("")
         tree_lines.append("Legend: 🟢 >10dB  🟡 5-10dB  🔴 <5dB  ⚪ Unknown")
-        
+
         return "\n".join(tree_lines)
-    
+
     def _create_network_diagram(self, nodes, connections):
         """Create ASCII network diagram for topology visualization"""
         diagram_lines = []
         diagram_lines.append("🌐 NETWORK TOPOLOGY DIAGRAM")
         diagram_lines.append("=" * 50)
         diagram_lines.append("")
-        
+
         # Group nodes by activity and hops
         active_nodes = []
         for n in nodes:
@@ -1796,20 +1954,20 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     if last_heard > datetime.now() - timedelta(hours=1):
                         active_nodes.append(n)
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Error parsing last_heard for node {n.get('long_name', 'Unknown')}: {e}")
+                    logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)
                     continue
-        
+
         # Sort by hops away
         active_nodes.sort(key=lambda x: x.get('hops_away', 0))
-        
+
         if not active_nodes:
             diagram_lines.append("⚪ No active nodes detected")
             return "\n".join(diagram_lines)
-        
+
         # Create hierarchical diagram
         diagram_lines.append("📡 Active Network Nodes:")
         diagram_lines.append("")
-        
+
         # Group by hops
         hop_groups = {}
         for node in active_nodes:
@@ -1817,16 +1975,16 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
             if hops not in hop_groups:
                 hop_groups[hops] = []
             hop_groups[hops].append(node)
-        
+
         # Draw the network tree
         for hops in sorted(hop_groups.keys()):
             nodes_at_hop = hop_groups[hops]
-            
+
             if hops == 0:
                 diagram_lines.append("🏠 DIRECT CONNECTIONS (0 hops)")
             else:
                 diagram_lines.append(f"🔗 HOP {hops} NODES")
-            
+
             for i, node in enumerate(nodes_at_hop[:6]):  # Limit to 6 per hop
                 # Get signal quality indicator
                 snr = node.get('snr')
@@ -1839,7 +1997,7 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                         signal_icon = "🔴"
                 else:
                     signal_icon = "⚪"
-                
+
                 # Get battery indicator
                 battery = node.get('battery_level')
                 if battery is not None:
@@ -1851,16 +2009,16 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                         battery_icon = "🔴"
                 else:
                     battery_icon = "❓"
-                
+
                 # Format node name
                 node_name = node['long_name'][:15]
                 if i == len(nodes_at_hop) - 1 and len(nodes_at_hop) > 6:
                     diagram_lines.append(f"   └─ {signal_icon}{battery_icon} {node_name} +{len(nodes_at_hop)-6} more")
                 else:
                     diagram_lines.append(f"   ├─ {signal_icon}{battery_icon} {node_name}")
-            
+
             diagram_lines.append("")
-        
+
         # Show connections if available
         if connections:
             diagram_lines.append("🔗 TOP CONNECTIONS:")
@@ -1869,17 +2027,17 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                 to_name = self.database.get_node_display_name(conn['to_node'])[:12]
                 msg_count = conn['message_count']
                 avg_hops = conn['avg_hops']
-                
+
                 if i == len(connections[:5]) - 1 and len(connections) > 5:
                     diagram_lines.append(f"   {from_name} ──→ {to_name} ({msg_count}msgs) +{len(connections)-5} more")
                 else:
                     diagram_lines.append(f"   {from_name} ──→ {to_name} ({msg_count}msgs)")
-        
+
         diagram_lines.append("")
         diagram_lines.append("Legend: 🟢🟡🔴 Signal Quality | 🔋🪫🔴 Battery | ⚪❓ Unknown")
-        
+
         return "\n".join(diagram_lines)
-    
+
     def _format_node_info(self, node: Dict[str, Any]) -> str:
         """Format node information for display"""
         try:
@@ -1890,28 +2048,32 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
             snr = str(node.get('snr', '?'))
             battery = f"{node.get('battery_level', 'N/A')}%" if node.get('battery_level') is not None else "N/A"
             temperature = f"{node.get('temperature', 'N/A'):.1f}°C" if node.get('temperature') is not None else "N/A"
-            
+
             if node.get('last_heard'):
                 try:
                     last_heard = datetime.fromisoformat(node['last_heard'])
                     time_str = last_heard.strftime('%H:%M:%S')
-                except:
+                except (ValueError, TypeError, AttributeError):
                     time_str = "Unknown"
             else:
                 time_str = "Unknown"
-            
-            return f"**{long_name}** (ID: {node_id}, Num: {node_num}) - Hops: {hops_away}, SNR: {snr}, Battery: {battery}, Temp: {temperature}, Last: {time_str}"
-            
+
+            return (
+                f"**{long_name}** (ID: {node_id}, Num: {node_num}) - "
+                f"Hops: {hops_away}, SNR: {snr}, Battery: {battery}, "
+                f"Temp: {temperature}, Last: {time_str}"
+            )
+
         except Exception as e:
-            logger.error(f"Error formatting node info: {e}")
+            logger.error("Error formatting node info: %s", e)
             return f"**Node {node.get('node_id', 'Unknown')}** - Error formatting data"
-    
+
     def _create_connection_tree(self, nodes, connections):
         """Create readable ASCII tree for Discord showing network topology"""
         tree_lines = []
         tree_lines.append("🌐 MESH NETWORK TOPOLOGY")
         tree_lines.append("=" * 50)
-        
+
         # Get active nodes (last 2 hours)
         active_nodes = []
         for n in nodes:
@@ -1922,11 +2084,11 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                         active_nodes.append(n)
                 except (ValueError, TypeError):
                     continue
-        
+
         if not active_nodes:
             tree_lines.append("📡 No active nodes found")
             return "\n".join(tree_lines)
-        
+
         # Build routing map
         routing_map = {}
         for conn in connections:
@@ -1938,7 +2100,7 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                 routing_map[to_node] = []
             routing_map[from_node].append({'node': to_node, 'msgs': conn['message_count']})
             routing_map[to_node].append({'node': from_node, 'msgs': conn['message_count']})
-        
+
         # Sort and group by hops
         active_nodes.sort(key=lambda x: x.get('hops_away') or 0)
         hop_groups = {}
@@ -1947,24 +2109,24 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
             if hops not in hop_groups:
                 hop_groups[hops] = []
             hop_groups[hops].append(node)
-        
+
         # Build readable tree
         for hops in sorted(hop_groups.keys()):
             nodes_at_hop = hop_groups[hops]
-            
+
             # Hop header
             if hops == 0:
                 tree_lines.append(f"\n📡 DIRECT CONNECTIONS (0 hops):")
             else:
                 tree_lines.append(f"\n🔗 {hops} HOP{'S' if hops > 1 else ''} AWAY:")
-            
+
             # Show nodes with better formatting
             for i, node in enumerate(nodes_at_hop):
                 snr = node.get('snr')
                 battery = node.get('battery_level')
                 node_id = node.get('node_id')
                 long_name = node.get('long_name', 'Unknown')
-                
+
                 # Signal quality indicators
                 if snr is not None:
                     if snr > 10:
@@ -1979,7 +2141,7 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                 else:
                     sig_icon = "⚪"  # Unknown
                     sig_text = "Unknown"
-                
+
                 # Battery level
                 if battery is not None:
                     if battery > 80:
@@ -1994,11 +2156,11 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                 else:
                     bat_icon = "❓"  # Unknown
                     bat_text = "Unknown"
-                
+
                 # Node type
                 node_type = "Router" if node.get('is_router') else "Client"
                 type_icon = "📡" if node.get('is_router') else "📱"
-                
+
                 # Find routing parent
                 via_text = ""
                 if hops > 0 and node_id in routing_map:
@@ -2015,11 +2177,14 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                                     break
                         if via_text:
                             break
-                
+
                 # Format node line
-                node_line = f"  {type_icon} {long_name[:20]:<20} | {sig_icon} {sig_text:<6} | {bat_icon} {bat_text:<6} | ID: {node_id}{via_text}"
+                node_line = (
+                    f"  {type_icon} {long_name[:20]:<20} | {sig_icon} {sig_text:<6} | "
+                    f"{bat_icon} {bat_text:<6} | ID: {node_id}{via_text}"
+                )
                 tree_lines.append(node_line)
-        
+
         # Top connections
         if connections:
             tree_lines.append(f"\n🔗 TOP CONNECTIONS:")
@@ -2029,35 +2194,35 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                 to_name = self.database.get_node_display_name(conn['to_node'])[:15]
                 msgs = conn['message_count']
                 avg_hops = conn.get('avg_hops', 0)
-                
+
                 tree_lines.append(f"  {from_name} ↔ {to_name} ({msgs} msgs, {avg_hops:.1f} avg hops)")
-        
+
         return "\n".join(tree_lines)
-    
+
     def _calculate_tree_depth(self, connections):
         """Calculate the maximum depth of the connection tree"""
         if not connections:
             return 0
-        
+
         # Simple heuristic: max hops in connections + 1
         max_hops = 0
         for conn in connections:
             hops = conn.get('avg_hops', 0)
             if hops is not None and hops > max_hops:
                 max_hops = hops
-        
+
         return int(max_hops) + 1
-    
+
     def _analyze_connection_quality(self, nodes, connections):
         """Analyze and summarize connection quality"""
         if not nodes or not connections:
             return "No connection data available"
-        
+
         # Analyze signal quality
         excellent_signal = 0
         good_signal = 0
         poor_signal = 0
-        
+
         for node in nodes:
             snr = node.get('snr')
             if snr is not None:
@@ -2067,38 +2232,38 @@ Last Heard: {nodes[0].get('last_heard', 'Unknown')}""",
                     good_signal += 1
                 else:
                     poor_signal += 1
-        
+
         total_with_signal = excellent_signal + good_signal + poor_signal
-        
+
         if total_with_signal == 0:
             signal_quality = "No signal data"
         else:
             excellent_pct = (excellent_signal / total_with_signal) * 100
             good_pct = (good_signal / total_with_signal) * 100
             poor_pct = (poor_signal / total_with_signal) * 100
-            
+
             if excellent_pct > 60:
                 signal_quality = f"🟢 Excellent ({excellent_pct:.0f}%)"
             elif good_pct > 40:
                 signal_quality = f"🟡 Good ({good_pct:.0f}%)"
             else:
                 signal_quality = f"🔴 Poor ({poor_pct:.0f}%)"
-        
+
         # Analyze battery health
         high_battery = sum(1 for n in nodes if n.get('battery_level') is not None and n.get('battery_level') > 80)
         low_battery = sum(1 for n in nodes if n.get('battery_level') is not None and n.get('battery_level') < 40)
-        
+
         if high_battery > low_battery:
             battery_health = f"🔋 Good ({high_battery} high)"
         elif low_battery > 0:
             battery_health = f"🪫 Low ({low_battery} critical)"
         else:
             battery_health = "❓ Unknown"
-        
+
         return f"""Signal: {signal_quality}
 Battery: {battery_health}
 Connections: {len(connections)} active"""
-    
+
     async def _send_long_message(self, channel, message: str):
         """Send long messages by splitting if needed"""
         try:
@@ -2110,76 +2275,76 @@ Connections: {len(connections)} active"""
                 for chunk in chunks:
                     await channel.send(chunk)
         except Exception as e:
-            logger.error(f"Error sending long message: {e}")
+            logger.error("Error sending long message: %s", e)
             # Try to send a simple error message
             try:
                 await channel.send("❌ Error sending message to channel.")
-            except:
-                pass
-    
+            except discord.HTTPException:
+                pass  # Already logged the main error
+
     async def _safe_send(self, channel, message: str):
         """Safely send a message to a channel with error handling"""
         try:
             await channel.send(message)
         except Exception as e:
-            logger.error(f"Error sending message to channel: {e}")
+            logger.error("Error sending message to channel: %s", e)
 
 class DiscordBot(discord.Client):
     """Enhanced Discord bot with Meshtastic integration and database"""
-    
+
     def __init__(self, config: Config, meshtastic: MeshtasticInterface, database: MeshtasticDatabase):
         intents = discord.Intents.default()
         intents.message_content = True
-        
+
         super().__init__(intents=intents)
         self.config = config
         self.meshtastic = meshtastic
         self.database = database
-        
-        # Queues for communication
-        self.mesh_to_discord = queue.Queue()
-        self.discord_to_mesh = queue.Queue()
-        
+
+        # Queues for communication with size limits
+        self.mesh_to_discord = queue.Queue(maxsize=self.config.max_queue_size)
+        self.discord_to_mesh = queue.Queue(maxsize=self.config.max_queue_size)
+
         # Initialize command handler after queues are created
         self.command_handler = CommandHandler(meshtastic, self.discord_to_mesh, database)
-        
+
         # Background task
         self.bg_task = None
         self.telemetry_task = None
-        
+
         # Track last telemetry update hour
         self.last_telemetry_hour = datetime.now().hour
-    
+
     async def setup_hook(self) -> None:
         """Setup bot when starting"""
         self.bg_task = self.loop.create_task(self.background_task())
         self.telemetry_task = self.loop.create_task(self.telemetry_update_task())
-    
+
     async def on_ready(self):
         """Called when bot is ready"""
         logger.info(f'Logged in as {self.user} (ID: {self.user.id})')
         logger.info('------')
-        
+
         # Connect to Meshtastic
         if not await self.meshtastic.connect():
             logger.error("Failed to connect to Meshtastic. Exiting.")
             await self.close()
             return
-    
+
     async def on_message(self, message):
         """Handle incoming messages"""
         if message.author.id == self.user.id:
             return
-        
+
         # Handle ping/pong functionality
         if message.content.strip().lower() == "ping":
             await self._handle_ping(message)
             return
-        
+
         # Handle commands
         if message.content.startswith('$'):
             await self.command_handler.handle_command(message)
-    
+
     async def _handle_ping(self, message):
         """Handle ping command - send pong to mesh and announce to Discord"""
         try:
@@ -2196,10 +2361,10 @@ class DiscordBot(discord.Client):
                 inline=False
             )
             embed.set_footer(text=f"Requested by {message.author.display_name}")
-            
+
             # Send initial response
             await message.channel.send(embed=embed)
-            
+
             # Send pong to mesh network
             pong_sent = self.meshtastic.send_text("Pong!")
             # Small delay to prevent timing issues
@@ -2219,7 +2384,7 @@ class DiscordBot(discord.Client):
                 )
                 success_embed.set_footer(text=f"Completed for {message.author.display_name}")
                 await message.channel.send(embed=success_embed)
-                logger.info(f"Ping/pong handled from {message.author.name}")
+                logger.info("Ping/pong handled from %s", message.author.name)
             else:
                 # Update with failure
                 fail_embed = discord.Embed(
@@ -2236,7 +2401,7 @@ class DiscordBot(discord.Client):
                 fail_embed.set_footer(text=f"Failed for {message.author.display_name}")
                 await message.channel.send(embed=fail_embed)
         except Exception as e:
-            logger.error(f"Error handling ping: {e}")
+            logger.error("Error handling ping: %s", e)
             error_embed = discord.Embed(
                 title="❌ Ping Error",
                 description="An error occurred while testing connectivity",
@@ -2249,103 +2414,103 @@ class DiscordBot(discord.Client):
                 inline=False
             )
             await message.channel.send(embed=error_embed)
-    
+
     async def background_task(self):
         """Background task for handling queues and Meshtastic events"""
         await self.wait_until_ready()
-        
+
         # Subscribe to Meshtastic events
         pub.subscribe(self.on_mesh_receive, "meshtastic.receive")
         pub.subscribe(self.on_mesh_connection, "meshtastic.connection.established")
-        
+
         channel = self.get_channel(self.config.channel_id)
         if not channel:
-            logger.error(f"Could not find channel with ID {self.config.channel_id}")
+            logger.error("Could not find channel with ID %s", self.config.channel_id)
             return
-        
+
         logger.info("Background task started")
-        
+
         # Performance counters
         last_cleanup = time.time()
         cleanup_interval = 300  # 5 minutes
-        
+
         while not self.is_closed():
             try:
                 # Process mesh to Discord messages
                 await self._process_mesh_to_discord(channel)
-                
+
                 # Process Discord to mesh messages
                 await self._process_discord_to_mesh()
-                
+
                 # Process nodes periodically
                 if time.time() - self.meshtastic.last_node_refresh >= self.config.node_refresh_interval:
                     await self._process_nodes(channel)
-                
+
                 # Periodic cleanup
                 now = time.time()
                 if now - last_cleanup >= cleanup_interval:
                     await self._periodic_cleanup()
                     last_cleanup = now
-                
+
                 await asyncio.sleep(1)  # Check every second
-                
+
             except Exception as e:
-                logger.error(f"Error in background task: {e}")
+                logger.error("Error in background task: %s", e)
                 await asyncio.sleep(5)
-    
+
     async def _periodic_cleanup(self):
         """Perform periodic cleanup tasks"""
         try:
             # Clear command handler cache
             if hasattr(self.command_handler, 'clear_cache'):
                 self.command_handler.clear_cache()
-            
+
             # Clean up old database data
             if hasattr(self.database, 'cleanup_old_data'):
                 self.database.cleanup_old_data(30)  # Keep 30 days
-            
+
             logger.debug("Periodic cleanup completed")
-            
+
         except Exception as e:
-            logger.error(f"Error during periodic cleanup: {e}")
-    
+            logger.error("Error during periodic cleanup: %s", e)
+
     async def telemetry_update_task(self):
         """Task for hourly telemetry updates"""
         await self.wait_until_ready()
-        
+
         while not self.is_closed():
             try:
                 current_hour = datetime.now().hour
-                
+
                 # Check if it's a new hour
                 if current_hour != self.last_telemetry_hour:
                     await self._send_telemetry_update()
                     self.last_telemetry_hour = current_hour
-                
+
                 await asyncio.sleep(60)  # Check every minute
-                
+
             except Exception as e:
-                logger.error(f"Error in telemetry update task: {e}")
+                logger.error("Error in telemetry update task: %s", e)
                 await asyncio.sleep(60)
-    
+
     async def _process_nodes(self, channel):
         """Process and store nodes, announce new ones"""
         try:
             result = self.meshtastic.process_nodes()
             if result and len(result) == 2:
                 processed_nodes, new_nodes = result
-                
-                logger.info(f"Node processing result: {len(processed_nodes)} processed, {len(new_nodes)} new")
-                
+
+                logger.info("Node processing result: %s processed, %s new", len(processed_nodes), len(new_nodes))
+
                 # Announce new nodes
                 for node in new_nodes:
                     await self._announce_new_node(channel, node)
             else:
                 logger.debug("No nodes processed or invalid result format")
-                
+
         except Exception as e:
-            logger.error(f"Error processing nodes: {e}")
-    
+            logger.error("Error processing nodes: %s", e)
+
     async def _announce_new_node(self, channel, node: Dict[str, Any]):
         """Announce new node with embed"""
         try:
@@ -2355,44 +2520,44 @@ class DiscordBot(discord.Client):
                 color=0x00ff00,
                 timestamp=get_utc_time()
             )
-            
+
             embed.add_field(name="Node ID", value=node['node_id'], inline=True)
             embed.add_field(name="Node Number", value=node.get('node_num', 'N/A'), inline=True)
             embed.add_field(name="Hardware", value=node.get('hw_model', 'Unknown'), inline=True)
             embed.add_field(name="Firmware", value=node.get('firmware_version', 'Unknown'), inline=True)
             embed.add_field(name="Hops Away", value=node.get('hops_away', 0), inline=True)
-            
+
             await channel.send(embed=embed)
-            logger.info(f"Announced new node: {node['long_name']}")
-            
+            logger.info("Announced new node: %s", node['long_name'])
+
         except Exception as e:
-            logger.error(f"Error announcing new node: {e}")
-    
+            logger.error("Error announcing new node: %s", e)
+
     async def _send_telemetry_update(self):
         """Send hourly telemetry update"""
         try:
             channel = self.get_channel(self.config.channel_id)
             if not channel:
                 return
-            
+
             try:
                 summary = self.database.get_telemetry_summary(60)
                 if not summary:
                     return
             except Exception as db_error:
-                logger.error(f"Database error getting telemetry summary for update: {db_error}")
+                logger.error("Database error getting telemetry summary for update: %s", db_error)
                 return
-            
+
             embed = discord.Embed(
                 title="📊 Hourly Telemetry Update",
                 description="Latest telemetry data from active nodes",
                 color=0x0099ff,
                 timestamp=get_utc_time()
             )
-            
+
             embed.add_field(name="Active Nodes", value=summary.get('active_nodes', 0), inline=True)
             embed.add_field(name="Total Nodes", value=summary.get('total_nodes', 0), inline=True)
-            
+
             if summary.get('avg_battery') is not None:
                 embed.add_field(name="Avg Battery", value=f"{summary['avg_battery']:.1f}%", inline=True)
             if summary.get('avg_temperature') is not None:
@@ -2401,20 +2566,20 @@ class DiscordBot(discord.Client):
                 embed.add_field(name="Avg Humidity", value=f"{summary['avg_humidity']:.1f}%", inline=True)
             if summary.get('avg_snr') is not None:
                 embed.add_field(name="Avg SNR", value=f"{summary['avg_snr']:.1f} dB", inline=True)
-            
+
             await channel.send(embed=embed)
             logger.info("Sent hourly telemetry update")
-            
+
         except Exception as e:
-            logger.error(f"Error sending telemetry update: {e}")
-    
-    
+            logger.error("Error sending telemetry update: %s", e)
+
+
     async def _process_mesh_to_discord(self, channel):
         """Process messages from mesh to Discord with improved error handling"""
         try:
             processed_count = 0
             max_batch_size = 10  # Process max 10 messages at once
-            
+
             while not self.mesh_to_discord.empty() and processed_count < max_batch_size:
                 item = self.mesh_to_discord.get_nowait()
                 try:
@@ -2425,37 +2590,40 @@ class DiscordBot(discord.Client):
                             to_name = item.get('to_name', item.get('to_id', 'Unknown'))
                             text = str(item.get('text', ''))
                             hops = item.get('hops_away', 0)
-                            
+
                             # Validate message content
                             if not text.strip():
-                                logger.warning(f"Empty message from {from_name}")
+                                logger.warning("Empty message from %s", from_name)
                                 continue
-                            
+
                             # Format destination - use "Longfast Channel" for broadcasts
                             if to_name == "^all" or to_name == "^all(^all)":
                                 destination = "Longfast Channel"
                             else:
                                 destination = to_name
-                            
+
                             # Format hops with bunny emoji
                             hops_text = f"🐰{hops} hops" if hops is not None else "🐰0 hops"
-                            
+
                             # Create single line message with length limit
                             message_text = f"📨 **{from_name}** → **{destination}** {hops_text}: {text}"
                             if len(message_text) > 2000:
                                 message_text = message_text[:1997] + "..."
-                            
+
                             await channel.send(message_text)
-                            logger.info(f"📤 DISCORD: Sent message to Discord - '{text[:30]}{'...' if len(text) > 30 else ''}' from {from_name}")
+                            logger.info(
+                                "📤 DISCORD: Sent message to Discord - '%s%s' from %s", 
+                                text[:30], '...' if len(text) > 30 else '', from_name
+                            )
                             processed_count += 1
-                            
+
                         elif item.get('type') == 'traceroute':
                             # Format traceroute information
                             from_name = item.get('from_name', item.get('from_id', 'Unknown'))
                             to_name = item.get('to_name', item.get('to_id', 'Unknown'))
                             route_text = item.get('route_text', '')
                             hops_count = item.get('hops_count', 0)
-                            
+
                             # Create traceroute embed
                             embed = discord.Embed(
                                 title="🛣️ Traceroute Result",
@@ -2463,25 +2631,25 @@ class DiscordBot(discord.Client):
                                 color=0x00bfff,
                                 timestamp=datetime.utcnow()
                             )
-                            
+
                             embed.add_field(
                                 name="📍 Route Path",
                                 value=route_text,
                                 inline=False
                             )
-                            
+
                             embed.add_field(
                                 name="📊 Statistics",
                                 value=f"Total Hops: {hops_count}",
                                 inline=True
                             )
-                            
+
                             embed.set_footer(text=f"Traceroute completed at")
-                            
+
                             await channel.send(embed=embed)
-                            logger.info(f"🛣️ DISCORD: Sent traceroute info - {from_name} → {to_name} ({hops_count} hops)")
+                            logger.info("🛣️ DISCORD: Sent traceroute info - %s → %s (%s hops)", from_name, to_name, hops_count)
                             processed_count += 1
-                        
+
                         elif item.get('type') == 'movement':
                             # Format movement notification
                             from_name = item.get('from_name', item.get('from_id', 'Unknown'))
@@ -2491,11 +2659,11 @@ class DiscordBot(discord.Client):
                             new_lat = item.get('new_lat', 0)
                             new_lon = item.get('new_lon', 0)
                             new_alt = item.get('new_alt', 0)
-                            
+
                             # Format coordinates for display
                             old_coords = f"{old_lat:.6f}, {old_lon:.6f}"
                             new_coords = f"{new_lat:.6f}, {new_lon:.6f}"
-                            
+
                             # Create movement embed
                             embed = discord.Embed(
                                 title="🚶 Node is on the move!",
@@ -2503,17 +2671,17 @@ class DiscordBot(discord.Client):
                                 color=0xff6b35,
                                 timestamp=datetime.utcnow()
                             )
-                            
+
                             # Add movement details
                             movement_text = f"**Distance:** {distance_moved:.1f} meters\n"
                             movement_text += f"**From:** `{old_coords}`\n"
                             movement_text += f"**To:** `{new_coords}`"
-                            
+
                             if new_alt != 0:
                                 movement_text += f"\n**Altitude:** {new_alt}m"
-                            
+
                             embed.add_field(name="📍 Movement Details", value=movement_text, inline=False)
-                            
+
                             # Add a fun movement indicator
                             if distance_moved > 1000:
                                 embed.add_field(name="🏃 Speed", value="Moving fast!", inline=True)
@@ -2521,17 +2689,17 @@ class DiscordBot(discord.Client):
                                 embed.add_field(name="🚶 Speed", value="Walking pace", inline=True)
                             else:
                                 embed.add_field(name="🐌 Speed", value="Slow movement", inline=True)
-                            
+
                             embed.set_footer(text=f"Movement detected at")
                             await channel.send(embed=embed)
-                            logger.info(f"🚶 DISCORD: Sent movement notification - {from_name} moved {distance_moved:.1f}m")
+                            logger.info("🚶 DISCORD: Sent movement notification - %s moved %.1fm", from_name, distance_moved)
                         processed_count += 1
-                        
+
                         # Special handling for ping messages - show pong response after a delay
                         if item.get('type') == 'text' and item.get('text', '').strip().lower() == "ping":
                             # Wait a moment for the ping message to be displayed first
                             await asyncio.sleep(1.0)
-                            
+
                             # Then show the pong response
                             pong_embed = discord.Embed(
                                 title="🏓 Pong Response",
@@ -2541,27 +2709,27 @@ class DiscordBot(discord.Client):
                             )
                             pong_embed.set_footer(text="🌍 UTC Time | Mesh network response")
                             await channel.send(embed=pong_embed)
-                            logger.info(f"Pong response announced for ping from {from_name}")
-                        
-                        
+                            logger.info("Pong response announced for ping from %s", from_name)
+
+
                     else:
                         # Handle other message types
                         message_text = f"📡 **Mesh Message:** {str(item)[:1900]}"
                         await channel.send(message_text)
                         processed_count += 1
-                        
+
                 except discord.HTTPException as e:
-                    logger.error(f"Discord API error sending message: {e}")
+                    logger.error("Discord API error sending message: %s", e)
                     # Don't re-queue the message, just log and continue
                 except Exception as e:
-                    logger.error(f"Error processing individual mesh message: {e}")
+                    logger.error("Error processing individual mesh message: %s", e)
                 finally:
                     self.mesh_to_discord.task_done()
-                    
+
         except queue.Empty:
             pass
         except Exception as e:
-            logger.error(f"Error processing mesh to Discord: {e}")
+            logger.error("Error processing mesh to Discord: %s", e)
             # Try to clear the queue to prevent memory buildup
             try:
                 while not self.mesh_to_discord.empty():
@@ -2571,8 +2739,8 @@ class DiscordBot(discord.Client):
                     except queue.Empty:
                         break
             except Exception as e:
-                logger.warning(f"Error clearing mesh to discord queue: {e}")
-    
+                logger.warning("Error clearing mesh to discord queue: %s", e)
+
     async def _process_discord_to_mesh(self):
         """Process messages from Discord to mesh"""
         try:
@@ -2581,55 +2749,64 @@ class DiscordBot(discord.Client):
                     message = self.discord_to_mesh.get_nowait()
                 except queue.Empty:
                     break
-                
+
                 if message.startswith('nodenum='):
                     # Extract node ID and message
                     parts = message.split(' ', 1)
                     if len(parts) == 2:
                         node_id = parts[0][8:]  # Remove 'nodenum='
                         message_text = parts[1]
-                        logger.info(f"📤 MESH: Sending message to node {node_id} - '{message_text[:50]}{'...' if len(message_text) > 50 else ''}'")
+                        logger.info(
+                            "📤 MESH: Sending message to node %s - '%s%s'", 
+                            node_id, message_text[:50], '...' if len(message_text) > 50 else ''
+                        )
                         try:
                             self.meshtastic.send_text(message_text, destination_id=node_id)
-                            logger.info(f"✅ MESH: Message sent successfully to node {node_id}")
+                            logger.info("✅ MESH: Message sent successfully to node %s", node_id)
                         except Exception as send_error:
-                            logger.error(f"❌ MESH: Error sending message to node {node_id}: {send_error}")
+                            logger.error("❌ MESH: Error sending message to node %s: %s", node_id, send_error)
                 else:
                     # Send to primary channel
-                    logger.info(f"📤 MESH: Sending message to primary channel - '{message[:50]}{'...' if len(message) > 50 else ''}'")
+                    logger.info(
+                        "📤 MESH: Sending message to primary channel - '%s%s'", 
+                        message[:50], '...' if len(message) > 50 else ''
+                    )
                     try:
                         self.meshtastic.send_text(message)
-                        logger.info(f"✅ MESH: Message sent successfully to primary channel")
+                        logger.info("✅ MESH: Message sent successfully to primary channel")
                     except Exception as send_error:
-                        logger.error(f"❌ MESH: Error sending message to primary channel: {send_error}")
-                
+                        logger.error("❌ MESH: Error sending message to primary channel: %s", send_error)
+
                 self.discord_to_mesh.task_done()
-                
+
         except queue.Empty:
             pass
         except Exception as e:
-            logger.error(f"Error processing Discord to mesh: {e}")
-    
+            logger.error("Error processing Discord to mesh: %s", e)
+
     def on_mesh_receive(self, packet, interface):
         """Handle incoming mesh packets"""
         try:
             if 'decoded' not in packet:
                 logger.debug("Received packet without decoded data")
                 return
-                
+
             portnum = packet['decoded']['portnum']
             from_id = packet.get('fromId', 'Unknown')
             to_id = packet.get('toId', 'Primary')
             hops_away = packet.get('hopsAway', 0)
             snr = packet.get('snr', 'N/A')
             rssi = packet.get('rssi', 'N/A')
-            
+
             # Get node display name for logging
             from_name = self.database.get_node_display_name(from_id) if self.database else from_id
-            
+
             # Log packet reception
-            logger.info(f"📦 PACKET RECEIVED: {portnum} from {from_name} ({from_id}) -> {to_id} | Hops: {hops_away} | SNR: {snr} | RSSI: {rssi}")
-            
+            logger.info(
+                "📦 PACKET RECEIVED: %s from %s (%s) -> %s | Hops: %s | SNR: %s | RSSI: %s", 
+                portnum, from_name, from_id, to_id, hops_away, snr, rssi
+            )
+
             # Add to live monitor buffer
             packet_info = {
                 'type': 'packet',
@@ -2643,29 +2820,29 @@ class DiscordBot(discord.Client):
             }
             if hasattr(self, 'command_handler'):
                 self.command_handler.add_packet_to_buffer(packet_info)
-            
+
             # Handle text messages
             if portnum == 'TEXT_MESSAGE_APP':
                 to_id = packet.get('toId', 'Primary')
                 text = packet['decoded']['text']
-                
+
                 from_name = self.database.get_node_display_name(from_id) if self.database else from_id
                 to_name = self.database.get_node_display_name(to_id) if self.database else to_id
-                
+
                 # Check for ping messages from mesh
                 if text.strip().lower() == "ping":
-                    logger.info(f"Ping received from mesh node {from_name}")
+                    logger.info("Ping received from mesh node %s", from_name)
                     # Send pong back to mesh with sender's name
                     try:
                         pong_message = f"Pong! - - > {from_name}"
                         self.meshtastic.send_text(pong_message)
-                        logger.info(f"Pong sent to mesh network: {pong_message}")
-                            
+                        logger.info("Pong sent to mesh network: %s", pong_message)
+
                     except Exception as pong_error:
-                        logger.error(f"Error sending pong to mesh: {pong_error}")
-                    
+                        logger.error("Error sending pong to mesh: %s", pong_error)
+
                     # Continue processing the ping message normally (don't return early)
-                
+
                 msg_payload = {
                     'type': 'text',
                     'from_id': from_id,
@@ -2679,8 +2856,11 @@ class DiscordBot(discord.Client):
                     'timestamp': datetime.utcnow().isoformat() + 'Z'
                 }
                 self.mesh_to_discord.put(msg_payload)
-                logger.info(f"💬 MESSAGE: Queued for Discord - '{text[:50]}{'...' if len(text) > 50 else ''}' from {from_name}")
-                
+                logger.info(
+                    "💬 MESSAGE: Queued for Discord - '%s%s' from %s", 
+                    text[:50], '...' if len(text) > 50 else '', from_name
+                )
+
                 # Add text message to live monitor buffer
                 text_packet_info = {
                     'type': 'text',
@@ -2695,7 +2875,7 @@ class DiscordBot(discord.Client):
                 }
                 if hasattr(self, 'command_handler'):
                     self.command_handler.add_packet_to_buffer(text_packet_info)
-                
+
                 # Store message in database
                 try:
                     message_data = {
@@ -2710,63 +2890,63 @@ class DiscordBot(discord.Client):
                     }
                     self.database.add_message(message_data)
                 except Exception as msg_error:
-                    logger.error(f"Error storing message in database: {msg_error}")
-            
+                    logger.error("Error storing message in database: %s", msg_error)
+
             # Handle telemetry packets
             elif portnum == 'TELEMETRY_APP':
                 if from_id and from_id != 'Unknown' and from_id is not None:
-                    logger.info(f"📊 TELEMETRY: Processing sensor data from {from_name}")
+                    logger.info("📊 TELEMETRY: Processing sensor data from %s", from_name)
                     self._process_telemetry_packet(packet)
                 else:
-                    logger.warning(f"📊 TELEMETRY: Skipping packet with invalid fromId: {from_id}")
-            
+                    logger.warning("📊 TELEMETRY: Skipping packet with invalid fromId: %s", from_id)
+
             # Handle position packets
             elif portnum == 'POSITION_APP':
-                logger.info(f"📍 POSITION: Location update from {from_name}")
+                logger.info("📍 POSITION: Location update from %s", from_name)
                 self._process_position_packet(packet)
-                
+
             # Handle node info packets
             elif portnum == 'NODEINFO_APP':
-                logger.info(f"👤 NODE INFO: Node information from {from_name}")
+                logger.info("👤 NODE INFO: Node information from %s", from_name)
                 # Node info packets are handled by Meshtastic library automatically
-                
+
             # Handle routing packets (traceroute)
             elif portnum == 'ROUTING_APP':
-                logger.info(f"🛣️ ROUTING: Processing traceroute from {from_name}")
+                logger.info("🛣️ ROUTING: Processing traceroute from %s", from_name)
                 self._process_routing_packet(packet)
-                
+
             # Handle admin packets
             elif portnum == 'ADMIN_APP':
-                logger.info(f"⚙️ ADMIN: Administrative message from {from_name}")
+                logger.info("⚙️ ADMIN: Administrative message from %s", from_name)
                 # Admin packets are handled by Meshtastic library automatically
-                
+
             # Handle other packet types
             else:
-                logger.info(f"❓ UNKNOWN: {portnum} packet from {from_name}")
-                
+                logger.info("❓ UNKNOWN: %s packet from %s", portnum, from_name)
+
         except Exception as e:
-            logger.error(f"Error processing mesh packet: {e}")
-    
+            logger.error("Error processing mesh packet: %s", e)
+
     def _process_telemetry_packet(self, packet):
         """Process telemetry packet and extract sensor data"""
         try:
             from_id = packet.get('fromId', 'Unknown')
-            
+
             # Skip if we don't have a valid node ID
             if not from_id or from_id == 'Unknown' or from_id is None:
-                logger.warning(f"Skipping telemetry packet with invalid fromId: {from_id}")
+                logger.warning("Skipping telemetry packet with invalid fromId: %s", from_id)
                 return
-                
+
             decoded = packet.get('decoded', {})
             telemetry_data = decoded.get('telemetry', {})
-            
+
             if not telemetry_data:
-                logger.debug(f"No telemetry data in packet from {from_id}")
+                logger.debug("No telemetry data in packet from %s", from_id)
                 return
-            
+
             # Extract different types of telemetry data
             extracted_data = {}
-            
+
             # Device metrics (battery, voltage, uptime, etc.)
             if 'deviceMetrics' in telemetry_data:
                 device_metrics = telemetry_data['deviceMetrics']
@@ -2780,7 +2960,7 @@ class DiscordBot(discord.Client):
                     extracted_data['air_util_tx'] = device_metrics['airUtilTx']
                 if device_metrics.get('uptimeSeconds') is not None:
                     extracted_data['uptime_seconds'] = device_metrics['uptimeSeconds']
-            
+
             # Environment metrics (temperature, humidity, pressure, etc.)
             if 'environmentMetrics' in telemetry_data:
                 env_metrics = telemetry_data['environmentMetrics']
@@ -2792,7 +2972,7 @@ class DiscordBot(discord.Client):
                     extracted_data['pressure'] = env_metrics['barometricPressure']
                 if env_metrics.get('gasResistance') is not None:
                     extracted_data['gas_resistance'] = env_metrics['gasResistance']
-            
+
             # Air quality metrics
             if 'airQualityMetrics' in telemetry_data:
                 air_metrics = telemetry_data['airQualityMetrics']
@@ -2804,7 +2984,7 @@ class DiscordBot(discord.Client):
                     extracted_data['pm100'] = air_metrics['pm100Environmental']
                 if air_metrics.get('aqi') is not None:
                     extracted_data['iaq'] = air_metrics['aqi']
-            
+
             # Power metrics
             if 'powerMetrics' in telemetry_data:
                 power_metrics = telemetry_data['powerMetrics']
@@ -2814,7 +2994,7 @@ class DiscordBot(discord.Client):
                     extracted_data['ch2_voltage'] = power_metrics['ch2Voltage']
                 if power_metrics.get('ch3Voltage') is not None:
                     extracted_data['ch3_voltage'] = power_metrics['ch3Voltage']
-            
+
             # Add radio metrics from packet
             if packet.get('snr') is not None:
                 extracted_data['snr'] = packet['snr']
@@ -2822,14 +3002,14 @@ class DiscordBot(discord.Client):
                 extracted_data['rssi'] = packet['rssi']
             if packet.get('frequency') is not None:
                 extracted_data['frequency'] = packet['frequency']
-            
+
             # Store telemetry data if we have any
             if extracted_data:
                 try:
                     success = self.database.add_telemetry(from_id, extracted_data)
                     if success:
-                        logger.info(f"Stored telemetry data for {from_id}: {list(extracted_data.keys())}")
-                        
+                        logger.info("Stored telemetry data for %s: %s", from_id, list(extracted_data.keys()))
+
                         # Add telemetry to live monitor buffer
                         if from_id and from_id != 'Unknown' and from_id is not None:
                             telemetry_packet_info = {
@@ -2845,86 +3025,92 @@ class DiscordBot(discord.Client):
                             if hasattr(self, 'command_handler'):
                                 self.command_handler.add_packet_to_buffer(telemetry_packet_info)
                     else:
-                        logger.warning(f"Failed to store telemetry data for {from_id}")
+                        logger.warning("Failed to store telemetry data for %s", from_id)
                 except Exception as telemetry_error:
-                    logger.error(f"Error storing telemetry data for {from_id}: {telemetry_error}")
+                    logger.error("Error storing telemetry data for %s: %s", from_id, telemetry_error)
             else:
-                logger.debug(f"No extractable telemetry data from {from_id}")
-                
+                logger.debug("No extractable telemetry data from %s", from_id)
+
         except Exception as e:
-            logger.error(f"Error processing telemetry packet: {e}")
-    
+            logger.error("Error processing telemetry packet: %s", e)
+
     def _process_routing_packet(self, packet):
         """Process routing packet and display traceroute information in Discord"""
         try:
             from_id = packet.get('fromId', 'Unknown')
             to_id = packet.get('toId', 'Primary')
             decoded = packet.get('decoded', {})
-            
+
             # Check if this is a RouteDiscovery packet
             if 'routing' in decoded and 'routeDiscovery' in decoded['routing']:
                 route_data = decoded['routing']['routeDiscovery']
-                
+
                 # Get node display names
                 from_name = self.database.get_node_display_name(from_id) if self.database else from_id
                 to_name = self.database.get_node_display_name(to_id) if self.database else to_id
-                
+
                 # Extract route information
                 route = route_data.get('route', [])
                 route_back = route_data.get('routeBack', [])
                 snr_towards = route_data.get('snrTowards', [])
                 snr_back = route_data.get('snrBack', [])
-                
+
                 # Build route string
                 route_parts = []
-                
+
                 # Route towards destination
                 if route:
                     route_parts.append(f"**Towards {to_name}:**")
                     current_route = f"{from_name}"
-                    
+
                     for i, node_num in enumerate(route):
-                        node_name = self.database.get_node_display_name(f"!{node_num:08x}") if self.database else f"!{node_num:08x}"
+                        node_name = (
+                            self.database.get_node_display_name(f"!{node_num:08x}") 
+                            if self.database else f"!{node_num:08x}"
+                        )
                         snr = ""
                         if i < len(snr_towards) and snr_towards[i] != -128:  # -128 is UNK_SNR
                             snr = f" ({snr_towards[i]/4:.1f}dB)"
                         current_route += f" → {node_name}{snr}"
-                    
+
                     # Add destination
                     if snr_towards and len(snr_towards) > len(route):
                         snr = f" ({snr_towards[-1]/4:.1f}dB)" if snr_towards[-1] != -128 else ""
                     else:
                         snr = ""
                     current_route += f" → {to_name}{snr}"
-                    
+
                     route_parts.append(current_route)
-                
+
                 # Route back from destination
                 if route_back:
                     route_parts.append(f"**Back from {to_name}:**")
                     back_route = f"{to_name}"
-                    
+
                     for i, node_num in enumerate(route_back):
-                        node_name = self.database.get_node_display_name(f"!{node_num:08x}") if self.database else f"!{node_num:08x}"
+                        node_name = (
+                            self.database.get_node_display_name(f"!{node_num:08x}") 
+                            if self.database else f"!{node_num:08x}"
+                        )
                         snr = ""
                         if i < len(snr_back) and snr_back[i] != -128:  # -128 is UNK_SNR
                             snr = f" ({snr_back[i]/4:.1f}dB)"
                         back_route += f" → {node_name}{snr}"
-                    
+
                     # Add origin
                     if snr_back and len(snr_back) > len(route_back):
                         snr = f" ({snr_back[-1]/4:.1f}dB)" if snr_back[-1] != -128 else ""
                     else:
                         snr = ""
                     back_route += f" → {from_name}{snr}"
-                    
+
                     route_parts.append(back_route)
-                
+
                 # Create Discord message
                 if route_parts:
                     route_text = "\n".join(route_parts)
                     hops_count = len(route) + len(route_back) if route_back else len(route)
-                    
+
                     # Queue for Discord display
                     traceroute_payload = {
                         'type': 'traceroute',
@@ -2937,8 +3123,8 @@ class DiscordBot(discord.Client):
                         'timestamp': datetime.utcnow().isoformat() + 'Z'
                     }
                     self.mesh_to_discord.put(traceroute_payload)
-                    logger.info(f"🛣️ TRACEROUTE: Queued route info - {from_name} → {to_name} ({hops_count} hops)")
-                    
+                    logger.info("🛣️ TRACEROUTE: Queued route info - %s → %s (%s hops)", from_name, to_name, hops_count)
+
                     # Add traceroute to live monitor buffer
                     traceroute_packet_info = {
                         'type': 'traceroute',
@@ -2955,53 +3141,53 @@ class DiscordBot(discord.Client):
                     if hasattr(self, 'command_handler'):
                         self.command_handler.add_packet_to_buffer(traceroute_packet_info)
                 else:
-                    logger.debug(f"No route information in routing packet from {from_name}")
+                    logger.debug("No route information in routing packet from %s", from_name)
             else:
-                logger.debug(f"Routing packet from {from_name} does not contain RouteDiscovery data")
-                
+                logger.debug("Routing packet from %s does not contain RouteDiscovery data", from_name)
+
         except Exception as e:
-            logger.error(f"Error processing routing packet: {e}")
-    
+            logger.error("Error processing routing packet: %s", e)
+
     def _process_position_packet(self, packet):
         """Process position packet and detect movement"""
         try:
             from_id = packet.get('fromId', 'Unknown')
             decoded = packet.get('decoded', {})
             position_data = decoded.get('position', {})
-            
+
             if not position_data:
-                logger.debug(f"No position data in packet from {from_id}")
+                logger.debug("No position data in packet from %s", from_id)
                 return
-            
+
             # Extract position coordinates
             new_lat = position_data.get('latitude_i', 0) / 1e7  # Convert from integer to float
             new_lon = position_data.get('longitude_i', 0) / 1e7
             new_alt = position_data.get('altitude', 0)
-            
+
             # Skip if coordinates are invalid (0,0)
             if new_lat == 0 and new_lon == 0:
-                logger.debug(f"Invalid position coordinates (0,0) from {from_id}")
+                logger.debug("Invalid position coordinates (0,0) from %s", from_id)
                 return
-            
+
             # Get last known position from database
             if self.database:
                 last_position = self.database.get_last_position(from_id)
-                
+
                 if last_position:
                     last_lat = last_position.get('latitude', 0)
                     last_lon = last_position.get('longitude', 0)
-                    
+
                     # Calculate distance moved
                     if last_lat != 0 and last_lon != 0:
                         distance_moved = self.calculate_distance(last_lat, last_lon, new_lat, new_lon)
-                        
+
                         # Movement threshold: 100 meters (configurable)
                         movement_threshold = 100.0
-                        
+
                         if distance_moved > movement_threshold:
                             # Node has moved significantly!
                             from_name = self.database.get_node_display_name(from_id) if self.database else from_id
-                            
+
                             # Create movement notification
                             movement_payload = {
                                 'type': 'movement',
@@ -3015,11 +3201,11 @@ class DiscordBot(discord.Client):
                                 'new_alt': new_alt,
                                 'timestamp': datetime.utcnow().isoformat() + 'Z'
                             }
-                            
+
                             # Queue for Discord
                             self.mesh_to_discord.put(movement_payload)
-                            logger.info(f"🚶 MOVEMENT: {from_name} moved {distance_moved:.1f}m from last position")
-                            
+                            logger.info("🚶 MOVEMENT: %s moved %.1fm from last position", from_name, distance_moved)
+
                             # Add to live monitor buffer
                             if hasattr(self, 'command_handler'):
                                 movement_packet_info = {
@@ -3033,7 +3219,7 @@ class DiscordBot(discord.Client):
                                     'rssi': 'N/A'
                                 }
                                 self.command_handler.add_packet_to_buffer(movement_packet_info)
-            
+
             # Store new position in database
             if self.database:
                 try:
@@ -3047,33 +3233,36 @@ class DiscordBot(discord.Client):
                         'source': 'meshtastic'
                     }
                     self.database.add_position(from_id, position_data_to_store)
-                    logger.debug(f"Stored position for {from_id}: {new_lat:.6f}, {new_lon:.6f}")
+                    logger.debug("Stored position for %s: %.6f, %.6f", from_id, new_lat, new_lon)
                 except Exception as pos_error:
-                    logger.error(f"Error storing position for {from_id}: {pos_error}")
-                    
+                    logger.error("Error storing position for %s: %s", from_id, pos_error)
+
         except Exception as e:
-            logger.error(f"Error processing position packet: {e}")
-    
+            logger.error("Error processing position packet: %s", e)
+
     def on_mesh_connection(self, interface, topic=pub.AUTO_TOPIC):
         """Handle mesh connection events"""
-        logger.info(f"Connected to Meshtastic: {interface.myInfo}")
-    
+        logger.info("Connected to Meshtastic: %s", interface.myInfo)
+
     async def close(self):
         """Clean shutdown of the bot"""
         try:
             logger.info("Shutting down bot...")
-            
-            # Close database connections
-            if hasattr(self.database, 'close_connections'):
-                self.database.close_connections()
-            
+
+            # Properly close database with all cleanup
+            if self.database:
+                try:
+                    self.database.close()
+                except Exception as db_error:
+                    logger.warning("Error closing database: %s", db_error)
+
             # Close Meshtastic interface
             if self.meshtastic and self.meshtastic.iface:
                 try:
                     self.meshtastic.iface.close()
                 except Exception as e:
-                    logger.warning(f"Error closing Meshtastic interface: {e}")
-            
+                    logger.warning("Error closing Meshtastic interface: %s", e)
+
             # Cancel background tasks
             if self.bg_task and not self.bg_task.done():
                 self.bg_task.cancel()
@@ -3081,71 +3270,95 @@ class DiscordBot(discord.Client):
                     await self.bg_task
                 except asyncio.CancelledError:
                     pass
-            
+
             if self.telemetry_task and not self.telemetry_task.done():
                 self.telemetry_task.cancel()
                 try:
                     await self.telemetry_task
                 except asyncio.CancelledError:
                     pass
-            
+
             # Close Discord connection
             await super().close()
             logger.info("Bot shutdown complete")
-            
+
         except Exception as e:
-            logger.error(f"Error during bot shutdown: {e}")
+            logger.error("Error during bot shutdown: %s", e)
             await super().close()
 
 def main():
     """Main function to run the bot"""
     try:
-        # Load configuration
+        # Load configuration from environment and config.py
+        try:
+            channel_id_str = os.getenv("DISCORD_CHANNEL_ID", "0")
+            channel_id = int(channel_id_str) if channel_id_str.isdigit() else 0
+        except (ValueError, AttributeError):
+            logger.error("Invalid DISCORD_CHANNEL_ID format")
+            sys.exit(1)
+
         config = Config(
             discord_token=os.getenv("DISCORD_TOKEN"),
-            channel_id=int(os.getenv("DISCORD_CHANNEL_ID", "0")),
-            meshtastic_hostname=os.getenv("MESHTASTIC_HOSTNAME")
+            channel_id=channel_id,
+            meshtastic_hostname=os.getenv("MESHTASTIC_HOSTNAME"),
+            message_max_length=BOT_CONFIG.get('message_max_length', 225),
+            node_refresh_interval=BOT_CONFIG.get('node_refresh_interval', 60),
+            active_node_threshold=BOT_CONFIG.get('active_node_threshold', 60),
+            telemetry_update_interval=BOT_CONFIG.get('telemetry_update_interval', 3600),
+            max_queue_size=BOT_CONFIG.get('max_queue_size', 1000)
         )
-        
+
         # Validate configuration
         if not config.discord_token:
             logger.error("DISCORD_TOKEN not found in environment variables")
             sys.exit(1)
-        
+
         if not config.channel_id:
             logger.error("DISCORD_CHANNEL_ID not found or invalid in environment variables")
             sys.exit(1)
-        
-        
+
+
         # Initialize database
         try:
             database = MeshtasticDatabase()
             logger.info("Database initialized successfully")
         except Exception as db_error:
-            logger.error(f"Failed to initialize database: {db_error}")
+            logger.error("Failed to initialize database: %s", db_error)
             sys.exit(1)
-        
+
         # Create Meshtastic interface
         try:
             meshtastic_interface = MeshtasticInterface(config.meshtastic_hostname, database)
             logger.info("Meshtastic interface created successfully")
         except Exception as mesh_error:
-            logger.error(f"Failed to create Meshtastic interface: {mesh_error}")
+            logger.error("Failed to create Meshtastic interface: %s", mesh_error)
             sys.exit(1)
-        
+
         # Create and run bot
         try:
             bot = DiscordBot(config, meshtastic_interface, database)
             logger.info("Discord bot created successfully")
             bot.run(config.discord_token)
         except Exception as bot_error:
-            logger.error(f"Failed to create or run Discord bot: {bot_error}")
+            logger.error("Failed to create or run Discord bot: %s", bot_error)
             sys.exit(1)
-        
+
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
+        # Clean up database if it exists
+        if 'database' in locals():
+            try:
+                database.close()
+            except Exception:
+                pass
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.error("Fatal error: %s", e)
+        # Clean up database if it exists
+        if 'database' in locals():
+            try:
+                database.close()
+            except Exception:
+                pass
         sys.exit(1)
 
 if __name__ == "__main__":

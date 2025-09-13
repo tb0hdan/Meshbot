@@ -9,29 +9,37 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
-import json
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
 class MeshtasticDatabase:
     """SQLite database manager for Meshtastic node data with connection pooling and WAL mode"""
-    
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
     def __init__(self, db_path: str = "meshtastic.db"):
         self.db_path = db_path
         self._lock = threading.RLock()
         self._connection_pool = []
         self._max_connections = 5
         self._connection_timeout = 30
+        self._shutdown = False
+        self._maintenance_thread = None
         self.init_database()
         self._start_maintenance_task()
-    
+
     def init_database(self):
         """Initialize database tables with WAL mode and optimizations"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Enable WAL mode for better concurrency
                 cursor.execute("PRAGMA journal_mode = WAL")
                 cursor.execute("PRAGMA synchronous = NORMAL")
@@ -39,7 +47,7 @@ class MeshtasticDatabase:
                 cursor.execute("PRAGMA temp_store = MEMORY")
                 cursor.execute("PRAGMA mmap_size = 268435456")  # 256MB
                 cursor.execute("PRAGMA optimize")
-                
+
                 # Nodes table - stores basic node information
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS nodes (
@@ -58,7 +66,7 @@ class MeshtasticDatabase:
                         is_client BOOLEAN DEFAULT TRUE
                     )
                 """)
-                
+
                 # Telemetry table - stores telemetry data
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS telemetry (
@@ -112,7 +120,7 @@ class MeshtasticDatabase:
                         FOREIGN KEY (node_id) REFERENCES nodes (node_id)
                     )
                 """)
-                
+
                 # Position table - stores position data
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS positions (
@@ -129,7 +137,7 @@ class MeshtasticDatabase:
                         FOREIGN KEY (node_id) REFERENCES nodes (node_id)
                     )
                 """)
-                
+
                 # Messages table - stores message history
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS messages (
@@ -147,38 +155,48 @@ class MeshtasticDatabase:
                         FOREIGN KEY (to_node_id) REFERENCES nodes (node_id)
                     )
                 """)
-                
+
                 # Create indexes for better performance
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_last_heard ON nodes (last_heard)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON telemetry (timestamp)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_timestamp ON positions (timestamp)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_long_name ON nodes (long_name)")
-                
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_nodes_last_heard ON nodes (last_heard)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON telemetry (timestamp)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_positions_timestamp ON positions (timestamp)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_nodes_long_name ON nodes (long_name)"
+                )
+
                 # Migrate existing telemetry table to add new columns
                 self._migrate_telemetry_table(cursor)
-                
+
                 conn.commit()
                 logger.info("Database initialized successfully with WAL mode")
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error: {e}")
+            logger.error("Database operational error: %s", e)
             raise
         except sqlite3.Error as e:
-            logger.error(f"Database error: {e}")
+            logger.error("Database error: %s", e)
             raise
         except Exception as e:
-            logger.error(f"Unexpected error initializing database: {e}")
+            logger.error("Unexpected error initializing database: %s", e)
             raise
-    
+
     def _migrate_telemetry_table(self, cursor):
         """Migrate telemetry table to add new sensor columns"""
         try:
             # Get current table schema
             cursor.execute("PRAGMA table_info(telemetry)")
             columns = [row[1] for row in cursor.fetchall()]
-            
-            # New columns to add
+
+            # New columns to add - use whitelist of safe column names
             new_columns = [
                 ('channel_utilization', 'REAL'),
                 ('air_util_tx', 'REAL'),
@@ -203,17 +221,23 @@ class MeshtasticDatabase:
                 ('ch7_current', 'REAL'),
                 ('ch8_current', 'REAL')
             ]
-            
-            # Add missing columns
+
+            # Add missing columns - using parameterized approach
             for column_name, column_type in new_columns:
                 if column_name not in columns:
-                    cursor.execute(f"ALTER TABLE telemetry ADD COLUMN {column_name} {column_type}")
-                    logger.info(f"Added column {column_name} to telemetry table")
-                    
-        except Exception as e:
-            logger.error(f"Error migrating telemetry table: {e}")
+                    # Validate column name contains only alphanumeric and underscore
+                    if not column_name.replace('_', '').isalnum():
+                        logger.warning("Skipping invalid column name: %s", column_name)
+                        continue
+                    # Use safe SQL construction
+                    sql = f"ALTER TABLE telemetry ADD COLUMN {column_name} {column_type}"
+                    cursor.execute(sql)
+                    logger.info("Added column %s to telemetry table", column_name)
+
+        except (sqlite3.Error, ValueError) as e:
+            logger.error("Error migrating telemetry table: %s", e)
             # Don't raise - this is a migration, not critical
-    
+
     @contextmanager
     def _get_connection(self):
         """Get a database connection from the pool or create a new one"""
@@ -235,9 +259,9 @@ class MeshtasticDatabase:
                     conn.execute("PRAGMA synchronous = NORMAL")
                     conn.execute("PRAGMA cache_size = -2000")
                     conn.execute("PRAGMA temp_store = MEMORY")
-                
+
                 yield conn
-                
+
         except Exception as e:
             if conn:
                 conn.rollback()
@@ -253,67 +277,75 @@ class MeshtasticDatabase:
                         else:
                             conn.close()
                 except Exception as e:
-                    logger.warning(f"Error returning connection to pool: {e}")
+                    logger.warning("Error returning connection to pool: %s", e)
                     if conn:
                         conn.close()
-    
+
     def _start_maintenance_task(self):
         """Start background maintenance task"""
         def maintenance_worker():
-            while True:
+            while not self._shutdown:
                 try:
-                    time.sleep(3600)  # Run every hour
-                    self._run_maintenance()
+                    # Check shutdown flag more frequently
+                    for _ in range(360):  # Check every 10 seconds for 1 hour
+                        if self._shutdown:
+                            break
+                        time.sleep(10)
+                    if not self._shutdown:
+                        self._run_maintenance()
                 except Exception as e:
-                    logger.error(f"Error in maintenance task: {e}")
+                    logger.error("Error in maintenance task: %s", e)
                     time.sleep(300)  # Wait 5 minutes before retrying
-        
-        maintenance_thread = threading.Thread(target=maintenance_worker, daemon=True)
-        maintenance_thread.start()
+
+        self._maintenance_thread = threading.Thread(target=maintenance_worker, daemon=True)
+        self._maintenance_thread.start()
         logger.info("Database maintenance task started")
-    
+
     def _run_maintenance(self):
         """Run database maintenance tasks"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Analyze database for query optimization
                 cursor.execute("ANALYZE")
-                
+
                 # Clean up old data (keep 30 days)
                 self.cleanup_old_data(30)
-                
+
                 # Vacuum if needed (check database size)
                 cursor.execute("PRAGMA page_count")
                 page_count = cursor.fetchone()[0]
                 cursor.execute("PRAGMA page_size")
                 page_size = cursor.fetchone()[0]
                 db_size_mb = (page_count * page_size) / (1024 * 1024)
-                
+
                 if db_size_mb > 100:  # If database is larger than 100MB
                     logger.info("Running VACUUM to optimize database")
                     cursor.execute("VACUUM")
-                
+
                 logger.info("Database maintenance completed")
-                
+
         except Exception as e:
-            logger.error(f"Error during database maintenance: {e}")
-    
+            logger.error("Error during database maintenance: %s", e)
+
     def add_or_update_node(self, node_data: Dict[str, Any]) -> Tuple[bool, bool]:
         """Add new node or update existing node information"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Check if node exists
-                cursor.execute("SELECT node_id FROM nodes WHERE node_id = ?", (node_data['node_id'],))
+                cursor.execute(
+                    "SELECT node_id FROM nodes WHERE node_id = ?",
+                    (node_data['node_id'],)
+                )
                 exists = cursor.fetchone()
-                
+
                 if exists:
                     # Update existing node
                     cursor.execute("""
-                        UPDATE nodes SET 
+                        UPDATE nodes SET
                             node_num = ?,
                             long_name = ?,
                             short_name = ?,
@@ -339,16 +371,19 @@ class MeshtasticDatabase:
                         node_data.get('is_client', True),
                         node_data['node_id']
                     ))
-                    
+
                     # Check if this is a new node (first time seen)
-                    cursor.execute("SELECT first_seen FROM nodes WHERE node_id = ?", (node_data['node_id'],))
+                    cursor.execute(
+                        "SELECT first_seen FROM nodes WHERE node_id = ?",
+                        (node_data['node_id'],)
+                    )
                     first_seen = cursor.fetchone()[0]
-                    
+
                     if first_seen == node_data.get('last_heard'):
                         # This is a new node
                         conn.commit()
                         return True, True  # (success, is_new_node)
-                    
+
                 else:
                     # Insert new node
                     cursor.execute("""
@@ -372,26 +407,26 @@ class MeshtasticDatabase:
                     ))
                     conn.commit()
                     return True, True  # (success, is_new_node)
-                
+
                 conn.commit()
                 return True, False  # (success, not_new_node)
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error adding/updating node: {e}")
+            logger.error("Database operational error adding/updating node: %s", e)
             return False, False
         except sqlite3.Error as e:
-            logger.error(f"Database error adding/updating node: {e}")
+            logger.error("Database error adding/updating node: %s", e)
             return False, False
         except Exception as e:
-            logger.error(f"Unexpected error adding/updating node: {e}")
+            logger.error("Unexpected error adding/updating node: %s", e)
             return False, False
-    
+
     def add_telemetry(self, node_id: str, telemetry_data: Dict[str, Any]) -> bool:
         """Add telemetry data for a node"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cursor.execute("""
                     INSERT INTO telemetry (
                         node_id, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds,
@@ -443,26 +478,26 @@ class MeshtasticDatabase:
                     telemetry_data.get('heading'),
                     telemetry_data.get('accuracy')
                 ))
-                
+
                 conn.commit()
                 return True
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error adding telemetry: {e}")
+            logger.error("Database operational error adding telemetry: %s", e)
             return False
         except sqlite3.Error as e:
-            logger.error(f"Database error adding telemetry: {e}")
+            logger.error("Database error adding telemetry: %s", e)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error adding telemetry: {e}")
+            logger.error("Unexpected error adding telemetry: %s", e)
             return False
-    
+
     def add_position(self, node_id: str, position_data: Dict[str, Any]) -> bool:
         """Add position data for a node"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cursor.execute("""
                     INSERT INTO positions (
                         node_id, latitude, longitude, altitude, speed, heading, accuracy, source
@@ -477,34 +512,34 @@ class MeshtasticDatabase:
                     position_data.get('accuracy'),
                     position_data.get('source', 'unknown')
                 ))
-                
+
                 conn.commit()
                 return True
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error adding position: {e}")
+            logger.error("Database operational error adding position: %s", e)
             return False
         except sqlite3.Error as e:
-            logger.error(f"Database error adding position: {e}")
+            logger.error("Database error adding position: %s", e)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error adding position: {e}")
+            logger.error("Unexpected error adding position: %s", e)
             return False
-    
+
     def get_last_position(self, node_id: str) -> Optional[Dict[str, Any]]:
         """Get the last known position for a node"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cursor.execute("""
                     SELECT latitude, longitude, altitude, speed, heading, accuracy, source, timestamp
-                    FROM positions 
-                    WHERE node_id = ? 
-                    ORDER BY timestamp DESC 
+                    FROM positions
+                    WHERE node_id = ?
+                    ORDER BY timestamp DESC
                     LIMIT 1
                 """, (node_id,))
-                
+
                 row = cursor.fetchone()
                 if row:
                     return {
@@ -518,23 +553,23 @@ class MeshtasticDatabase:
                         'timestamp': row[7]
                     }
                 return None
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error getting last position: {e}")
+            logger.error("Database operational error getting last position: %s", e)
             return None
         except sqlite3.Error as e:
-            logger.error(f"Database error getting last position: {e}")
+            logger.error("Database error getting last position: %s", e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error getting last position: {e}")
+            logger.error("Unexpected error getting last position: %s", e)
             return None
-    
+
     def add_message(self, message_data: Dict[str, Any]) -> bool:
         """Add message to database"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cursor.execute("""
                     INSERT INTO messages (
                         from_node_id, to_node_id, message_text, port_num, payload,
@@ -550,30 +585,30 @@ class MeshtasticDatabase:
                     message_data.get('snr'),
                     message_data.get('rssi')
                 ))
-                
+
                 conn.commit()
                 return True
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error adding message: {e}")
+            logger.error("Database operational error adding message: %s", e)
             return False
         except sqlite3.Error as e:
-            logger.error(f"Database error adding message: {e}")
+            logger.error("Database error adding message: %s", e)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error adding message: {e}")
+            logger.error("Unexpected error adding message: %s", e)
             return False
-    
+
     def get_active_nodes(self, minutes: int = 60) -> List[Dict[str, Any]]:
         """Get nodes active in the last N minutes"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cutoff_time = datetime.now() - timedelta(minutes=minutes)
-                
+
                 cursor.execute("""
-                    SELECT n.*, 
+                    SELECT n.*,
                            t.battery_level, t.voltage, t.temperature, t.humidity,
                            t.pressure, t.gas_resistance, t.iaq, t.snr, t.rssi,
                            p.latitude, p.longitude, p.altitude, p.speed, p.heading
@@ -581,47 +616,47 @@ class MeshtasticDatabase:
                     LEFT JOIN (
                         SELECT node_id, battery_level, voltage, temperature, humidity,
                                pressure, gas_resistance, iaq, snr, rssi
-                        FROM telemetry 
+                        FROM telemetry
                         WHERE timestamp = (
-                            SELECT MAX(timestamp) FROM telemetry t2 
+                            SELECT MAX(timestamp) FROM telemetry t2
                             WHERE t2.node_id = telemetry.node_id
                         )
                     ) t ON n.node_id = t.node_id
                     LEFT JOIN (
                         SELECT node_id, latitude, longitude, altitude, speed, heading
-                        FROM positions 
+                        FROM positions
                         WHERE timestamp = (
-                            SELECT MAX(timestamp) FROM positions p2 
+                            SELECT MAX(timestamp) FROM positions p2
                             WHERE p2.node_id = positions.node_id
                         )
                     ) p ON n.node_id = p.node_id
                     WHERE n.last_heard > ?
                     ORDER BY n.last_heard DESC
                 """, (cutoff_time.isoformat(),))
-                
+
                 columns = [description[0] for description in cursor.description]
                 rows = cursor.fetchall()
-                
+
                 return [dict(zip(columns, row)) for row in rows]
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error getting active nodes: {e}")
+            logger.error("Database operational error getting active nodes: %s", e)
             return []
         except sqlite3.Error as e:
-            logger.error(f"Database error getting active nodes: {e}")
+            logger.error("Database error getting active nodes: %s", e)
             return []
         except Exception as e:
-            logger.error(f"Unexpected error getting active nodes: {e}")
+            logger.error("Unexpected error getting active nodes: %s", e)
             return []
-    
+
     def get_all_nodes(self) -> List[Dict[str, Any]]:
         """Get all known nodes"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cursor.execute("""
-                    SELECT n.*, 
+                    SELECT n.*,
                            t.battery_level, t.voltage, t.temperature, t.humidity,
                            t.pressure, t.gas_resistance, t.iaq, t.snr, t.rssi,
                            p.latitude, p.longitude, p.altitude, p.speed, p.heading
@@ -629,59 +664,59 @@ class MeshtasticDatabase:
                     LEFT JOIN (
                         SELECT node_id, battery_level, voltage, temperature, humidity,
                                pressure, gas_resistance, iaq, snr, rssi
-                        FROM telemetry 
+                        FROM telemetry
                         WHERE timestamp = (
-                            SELECT MAX(timestamp) FROM telemetry t2 
+                            SELECT MAX(timestamp) FROM telemetry t2
                             WHERE t2.node_id = telemetry.node_id
                         )
                     ) t ON n.node_id = t.node_id
                     LEFT JOIN (
                         SELECT node_id, latitude, longitude, altitude, speed, heading
-                        FROM positions 
+                        FROM positions
                         WHERE timestamp = (
-                            SELECT MAX(timestamp) FROM positions p2 
+                            SELECT MAX(timestamp) FROM positions p2
                             WHERE p2.node_id = positions.node_id
                         )
                     ) p ON n.node_id = p.node_id
                     ORDER BY n.last_heard DESC
                 """)
-                
+
                 columns = [description[0] for description in cursor.description]
                 rows = cursor.fetchall()
-                
+
                 return [dict(zip(columns, row)) for row in rows]
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error getting all nodes: {e}")
+            logger.error("Database operational error getting all nodes: %s", e)
             return []
         except sqlite3.Error as e:
-            logger.error(f"Database error getting all nodes: {e}")
+            logger.error("Database error getting all nodes: %s", e)
             return []
         except Exception as e:
-            logger.error(f"Unexpected error getting all nodes: {e}")
+            logger.error("Unexpected error getting all nodes: %s", e)
             return []
-    
+
     def find_node_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Find node by fuzzy matching on long name"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Try exact match first
                 cursor.execute("""
                     SELECT * FROM nodes WHERE long_name = ? OR short_name = ?
                 """, (name, name))
                 result = cursor.fetchone()
-                
+
                 if result:
                     columns = [description[0] for description in cursor.description]
                     return dict(zip(columns, result))
-                
+
                 # Try partial match
                 cursor.execute("""
                     SELECT * FROM nodes WHERE long_name LIKE ? OR short_name LIKE ?
-                    ORDER BY 
-                        CASE 
+                    ORDER BY
+                        CASE
                             WHEN long_name = ? THEN 1
                             WHEN long_name LIKE ? THEN 2
                             WHEN short_name = ? THEN 3
@@ -691,34 +726,34 @@ class MeshtasticDatabase:
                         last_heard DESC
                     LIMIT 1
                 """, (f"%{name}%", f"%{name}%", name, f"{name}%", name, f"{name}%"))
-                
+
                 result = cursor.fetchone()
                 if result:
                     columns = [description[0] for description in cursor.description]
                     return dict(zip(columns, result))
-                
+
                 return None
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error finding node by name: {e}")
+            logger.error("Database operational error finding node by name: %s", e)
             return None
         except sqlite3.Error as e:
-            logger.error(f"Database error finding node by name: {e}")
+            logger.error("Database error finding node by name: %s", e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error finding node by name: {e}")
+            logger.error("Unexpected error finding node by name: %s", e)
             return None
-    
+
     def get_telemetry_summary(self, minutes: int = 60) -> Dict[str, Any]:
         """Get telemetry summary for active nodes"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cutoff_time = datetime.now() - timedelta(minutes=minutes)
-                
+
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         COUNT(DISTINCT n.node_id) as total_nodes,
                         COUNT(DISTINCT CASE WHEN n.last_heard > ? THEN n.node_id END) as active_nodes,
                         AVG(t.battery_level) as avg_battery,
@@ -729,52 +764,64 @@ class MeshtasticDatabase:
                     FROM nodes n
                     LEFT JOIN telemetry t ON n.node_id = t.node_id
                 """, (cutoff_time.isoformat(),))
-                
+
                 result = cursor.fetchone()
                 columns = [description[0] for description in cursor.description]
-                
+
                 return dict(zip(columns, result))
-                
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error getting telemetry summary: {e}")
+            logger.error("Database operational error getting telemetry summary: %s", e)
             return {}
         except sqlite3.Error as e:
-            logger.error(f"Database error getting telemetry summary: {e}")
+            logger.error("Database error getting telemetry summary: %s", e)
             return {}
         except Exception as e:
-            logger.error(f"Unexpected error getting telemetry summary: {e}")
+            logger.error("Unexpected error getting telemetry summary: %s", e)
             return {}
-    
+
     def cleanup_old_data(self, days: int = 30):
         """Clean up old telemetry and position data"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cutoff_time = datetime.now() - timedelta(days=days)
-                
+
                 # Clean up old telemetry
-                cursor.execute("DELETE FROM telemetry WHERE timestamp < ?", (cutoff_time.isoformat(),))
+                cursor.execute(
+                    "DELETE FROM telemetry WHERE timestamp < ?",
+                    (cutoff_time.isoformat(),)
+                )
                 telemetry_deleted = cursor.rowcount
-                
+
                 # Clean up old positions
-                cursor.execute("DELETE FROM positions WHERE timestamp < ?", (cutoff_time.isoformat(),))
+                cursor.execute(
+                    "DELETE FROM positions WHERE timestamp < ?",
+                    (cutoff_time.isoformat(),)
+                )
                 positions_deleted = cursor.rowcount
-                
+
                 # Clean up old messages
-                cursor.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff_time.isoformat(),))
+                cursor.execute(
+                    "DELETE FROM messages WHERE timestamp < ?",
+                    (cutoff_time.isoformat(),)
+                )
                 messages_deleted = cursor.rowcount
-                
+
                 conn.commit()
-                
-                logger.info(f"Cleaned up {telemetry_deleted} telemetry, {positions_deleted} positions, {messages_deleted} messages")
-                
+
+                logger.info(
+                    "Cleaned up %s telemetry, %s positions, %s messages",
+                    telemetry_deleted, positions_deleted, messages_deleted
+                )
+
         except sqlite3.OperationalError as e:
-            logger.error(f"Database operational error cleaning up old data: {e}")
+            logger.error("Database operational error cleaning up old data: %s", e)
         except sqlite3.Error as e:
-            logger.error(f"Database error cleaning up old data: {e}")
+            logger.error("Database error cleaning up old data: %s", e)
         except Exception as e:
-            logger.error(f"Unexpected error cleaning up old data: {e}")
+            logger.error("Unexpected error cleaning up old data: %s", e)
 
     def get_node_display_name(self, node_id: str) -> str:
         """Return the best human-friendly name for a node_id (long_name > short_name > node_id)."""
@@ -783,72 +830,74 @@ class MeshtasticDatabase:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    SELECT 
-                        CASE 
+                    SELECT
+                        CASE
                             WHEN long_name IS NOT NULL AND TRIM(long_name) <> '' THEN long_name
                             WHEN short_name IS NOT NULL AND TRIM(short_name) <> '' THEN short_name
                             ELSE node_id
                         END AS display_name
                     FROM nodes WHERE node_id = ?
-                    """, 
+                    """,
                     (node_id,)
                 )
                 row = cursor.fetchone()
                 if row and row[0]:
                     return str(row[0])
         except Exception as e:
-            logger.warning(f"Failed to lookup display name for {node_id}: {e}")
+            logger.warning("Failed to lookup display name for %s: %s", node_id, e)
         return str(node_id)
-    
-    def get_telemetry_history(self, node_id: str, hours: int = 24, limit: int = 100) -> List[Dict[str, Any]]:
+
+    def get_telemetry_history(
+        self, node_id: str, hours: int = 24, limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """Get telemetry history for a specific node"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cutoff_time = datetime.now() - timedelta(hours=hours)
-                
+
                 cursor.execute("""
                     SELECT timestamp, battery_level, voltage, temperature, humidity,
                            pressure, gas_resistance, iaq, snr, rssi, frequency,
                            latitude, longitude, altitude, speed, heading, accuracy
-                    FROM telemetry 
+                    FROM telemetry
                     WHERE node_id = ? AND timestamp > ?
                     ORDER BY timestamp DESC
                     LIMIT ?
                 """, (node_id, cutoff_time.isoformat(), limit))
-                
+
                 columns = [description[0] for description in cursor.description]
                 rows = cursor.fetchall()
-                
+
                 return [dict(zip(columns, row)) for row in rows]
-                
+
         except Exception as e:
-            logger.error(f"Error getting telemetry history: {e}")
+            logger.error("Error getting telemetry history: %s", e)
             return []
-    
+
     def get_network_topology(self) -> Dict[str, Any]:
         """Get network topology information"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # Get node connections based on message routing
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         from_node_id,
                         to_node_id,
                         COUNT(*) as message_count,
                         AVG(hops_away) as avg_hops,
                         AVG(snr) as avg_snr,
                         MAX(timestamp) as last_communication
-                    FROM messages 
+                    FROM messages
                     WHERE timestamp > datetime('now', '-24 hours')
                     GROUP BY from_node_id, to_node_id
                     HAVING message_count > 0
                     ORDER BY message_count DESC
                 """)
-                
+
                 connections = []
                 for row in cursor.fetchall():
                     connections.append({
@@ -859,19 +908,19 @@ class MeshtasticDatabase:
                         'avg_snr': row[4],
                         'last_communication': row[5]
                     })
-                
+
                 # Get node statistics
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         COUNT(*) as total_nodes,
                         COUNT(CASE WHEN last_heard > datetime('now', '-1 hour') THEN 1 END) as active_nodes,
                         COUNT(CASE WHEN is_router = 1 THEN 1 END) as router_nodes,
                         AVG(hops_away) as avg_hops
                     FROM nodes
                 """)
-                
+
                 stats = cursor.fetchone()
-                
+
                 return {
                     'connections': connections,
                     'total_nodes': stats[0] or 0,
@@ -879,46 +928,52 @@ class MeshtasticDatabase:
                     'router_nodes': stats[2] or 0,
                     'avg_hops': stats[3] or 0
                 }
-                
+
         except Exception as e:
-            logger.error(f"Error getting network topology: {e}")
-            return {'connections': [], 'total_nodes': 0, 'active_nodes': 0, 'router_nodes': 0, 'avg_hops': 0}
-    
+            logger.error("Error getting network topology: %s", e)
+            return {
+                'connections': [],
+                'total_nodes': 0,
+                'active_nodes': 0,
+                'router_nodes': 0,
+                'avg_hops': 0
+            }
+
     def get_message_statistics(self, hours: int = 24) -> Dict[str, Any]:
         """Get message statistics for the specified time period"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 cutoff_time = datetime.now() - timedelta(hours=hours)
-                
+
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         COUNT(*) as total_messages,
                         COUNT(DISTINCT from_node_id) as unique_senders,
                         COUNT(DISTINCT to_node_id) as unique_recipients,
                         AVG(hops_away) as avg_hops,
                         AVG(snr) as avg_snr,
                         AVG(rssi) as avg_rssi
-                    FROM messages 
+                    FROM messages
                     WHERE timestamp > ?
                 """, (cutoff_time.isoformat(),))
-                
+
                 stats = cursor.fetchone()
-                
+
                 # Get hourly message distribution
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         strftime('%H', timestamp) as hour,
                         COUNT(*) as message_count
-                    FROM messages 
+                    FROM messages
                     WHERE timestamp > ?
                     GROUP BY strftime('%H', timestamp)
                     ORDER BY hour
                 """, (cutoff_time.isoformat(),))
-                
+
                 hourly_distribution = {row[0]: row[1] for row in cursor.fetchall()}
-                
+
                 return {
                     'total_messages': stats[0] or 0,
                     'unique_senders': stats[1] or 0,
@@ -928,11 +983,11 @@ class MeshtasticDatabase:
                     'avg_rssi': stats[5] or 0,
                     'hourly_distribution': hourly_distribution
                 }
-                
+
         except Exception as e:
-            logger.error(f"Error getting message statistics: {e}")
+            logger.error("Error getting message statistics: %s", e)
             return {}
-    
+
     def close_connections(self):
         """Close all connections in the pool"""
         with self._lock:
@@ -940,7 +995,23 @@ class MeshtasticDatabase:
                 try:
                     conn.close()
                 except Exception as e:
-                    logger.warning(f"Error closing connection: {e}")
+                    logger.warning("Error closing connection: %s", e)
             self._connection_pool.clear()
             logger.info("All database connections closed")
 
+    def close(self):
+        """Clean shutdown of database resources"""
+        try:
+            # Signal maintenance thread to stop
+            self._shutdown = True
+
+            # Wait for maintenance thread to finish (with timeout)
+            if self._maintenance_thread and self._maintenance_thread.is_alive():
+                self._maintenance_thread.join(timeout=5)
+
+            # Close all connections
+            self.close_connections()
+
+            logger.info("Database shutdown complete")
+        except Exception as e:
+            logger.error("Error during database shutdown: %s", e)

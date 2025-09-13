@@ -3,5 +3,5 @@ discord.py>=2.3.0
 python-dotenv>=1.0.0
 pypubsub>=4.0.0
 meshtastic>=2.0.0
-
-# Note: sqlite3 is built into Python, no additional installation needed
+# Tests and linters
+pylint==3.3.8
