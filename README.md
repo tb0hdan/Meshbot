@@ -1,203 +1,261 @@
-# Meshtastic ↔ Discord Bridge Bot
+# 🤖 Meshtastic Discord Bridge Bot
 
-A robust bridge that relays Meshtastic **text messages** to Discord with clean, information‑rich embeds, plus helpful commands for querying nodes, recent traffic, and network health. It stores data in SQLite so names, telemetry, and stats improve over time.
+A powerful Discord bot that bridges communication between Discord and Meshtastic mesh networks, providing real-time monitoring, telemetry tracking, and network analysis features.
 
----
+## ✨ Features
 
-## ✨ Highlights
+### 🔗 **Core Functionality**
+- **Bidirectional Communication**: Send messages from Discord to mesh network and vice versa
+- **Real-time Monitoring**: Live packet monitoring with `$live` command
+- **Node Management**: Track and display all mesh network nodes
+- **Telemetry Tracking**: Monitor sensor data from mesh nodes
+- **Movement Detection**: Alert when nodes move significant distances
 
-- **Human‑readable relays**: Messages show **LongName (node_id)** with hops/SNR/RSSI when available.
-- **Daily Digest**: A 📊 summary embed once a day (messages, active nodes, new nodes, link quality, top talkers).
-- **Useful commands**: `$nodes`, `$activenodes`, `$stats`, `$last`, `$find`, `$whois`, `$uptime`, `$txt`, `$send`, `$help`, `$status`.
-- **Rate‑limit & dedup**: Prevents spam during bursts.
-- **Name resolution**: Long/short names pulled from the DB; auto‑fallback to node_id until learned.
-- **No per‑channel filters or allowlists** (by request) — simple global bridge toggle via `$bridge on|off`.
+### 📊 **Advanced Analytics**
+- **Network Topology**: Visual network maps and connection analysis
+- **Route Tracing**: Hop-by-hop path analysis with signal quality
+- **Message Statistics**: Comprehensive network activity metrics
+- **Performance Leaderboards**: Node performance rankings
+- **Live Telemetry**: Real-time sensor data monitoring
 
----
+### 🎯 **Discord Commands**
 
-## 🧭 Architecture at a glance
+#### **Basic Commands**
+- `$help` - Show all available commands
+- `$txt <message>` - Send message to primary mesh channel
+- `$send <node_name> <message>` - Send message to specific node
+- `$nodes` - List all known mesh nodes
+- `$activenodes` - Show nodes active in last 60 minutes
+- `$telem` - Display telemetry information
+- `$status` - Show bot and network status
 
-- **MeshtasticInterface** (TCP/serial) → receives packets and pushes structured events
-- **SQLite** (`meshtastic.db`) → nodes, telemetry, positions, messages
-- **DiscordBot** → renders readable embeds, exposes commands, posts daily digest
-- **CommandHandler** → command parsing, DB lookups, formatting
+#### **Advanced Commands**
+- `$topo` - Visual network topology tree
+- `$topology` - Detailed network connections analysis
+- `$trace <node_name>` - Trace route to specific node
+- `$stats` - Network message statistics
+- `$live` - Real-time packet monitoring (1 minute)
+- `$art` - ASCII network art visualization
+- `$leaderboard` - Network performance rankings
 
----
-
-## ✅ Requirements
-
-- **Python 3.10+** (3.11 recommended)
-- `pip install -r requirements.txt`
-  - `discord.py>=2.3.0`
-  - `python-dotenv>=1.0.0`
-  - `pypubsub>=4.0.0`
-  - `meshtastic>=2.0.0`
-- **Windows timezone note**: If daily digest timezone resolution fails, install `tzdata`:
-  ```bash
-  pip install tzdata
-  ```
-
----
+#### **Admin Commands**
+- `$debug` - Show debug information
+- `$clear` - Clear database (admin only)
 
 ## 🚀 Quick Start
 
-1. Unzip the project (or clone your working repo).
-2. Create a **.env** file in the project root (see config below).
-3. Install deps:
+### Prerequisites
+- Python 3.11+
+- Discord Bot Token
+- Meshtastic device or connection
+
+### Installation
+
+1. **Clone the repository**
    ```bash
-   python -m pip install -r requirements.txt
+   git clone <your-repo-url>
+   cd Bot
    ```
-4. Run the bot:
+
+2. **Create virtual environment**
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate  # Windows
+   # or
+   source venv/bin/activate  # Linux/Mac
+   ```
+
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Configure the bot**
+   - Copy `config.py` and update with your settings:
+     - Discord Bot Token
+     - Meshtastic connection details
+     - Database configuration
+
+5. **Run the bot**
    ```bash
    python bot.py
    ```
-5. Invite your Discord bot to a server and make sure it can **read & send messages** in your target channel.
 
-The bot will create `meshtastic.db` on first run and start learning node names and telemetry as it sees packets.
+## ⚙️ Configuration
 
----
-
-## 🔧 Configuration (.env)
-
+### Environment Variables
+Create a `.env` file with:
 ```env
-# Required
 DISCORD_TOKEN=your_discord_bot_token
-DISCORD_CHANNEL_ID=123456789012345678
-MESHTASTIC_HOSTNAME=192.168.0.150   # or leave blank to use serial if your code is set up for it
-
-# Optional – sane defaults provided
-BRIDGE_ENABLED=1                   # 1: relay mesh->Discord, 0: disable
-RELAY_RATE_LIMIT_PER_MIN=60        # token bucket per minute
-DEDUP_WINDOW_SEC=20                # ignore duplicate texts within this window
-VERBOSE_EMBEDS=1                   # 1: rich embeds, 0: plain strings
-MAX_EMBED_FIELDS=25                # Discord embed field cap (safety)
-
-# Daily Digest
-DIGEST_ENABLED=1
-DIGEST_HOUR_LOCAL=9                # hour in local timezone
-DIGEST_TZ=America/Toronto          # IANA TZ name; install 'tzdata' on Windows if needed
-DIGEST_HOURS=24                    # interval window for the digest
+MESHTASTIC_DEVICE=/dev/ttyUSB0  # or your device path
+DATABASE_PATH=meshtastic.db
 ```
 
-> **Tip:** Longnames show up as the bot learns them. Initially, some messages may fall back to `node_id` until node info is received and stored.
+### Database
+The bot uses SQLite with automatic schema management:
+- **Nodes**: Mesh network node information
+- **Telemetry**: Sensor data from nodes
+- **Positions**: GPS coordinates and movement tracking
+- **Messages**: Communication history
 
----
+## 📡 Meshtastic Integration
 
-## 💬 Commands
+### Supported Packet Types
+- **Text Messages**: Bidirectional text communication
+- **Telemetry**: Battery, temperature, humidity, pressure, air quality
+- **Position**: GPS coordinates and movement tracking
+- **Node Info**: Node identification and status
+- **Routing**: Traceroute and path analysis
+- **Admin**: Administrative commands
 
-| Command | What it does | Example |
-|---|---|---|
-| `$help` | Show command help + examples | `$help` |
-| `$txt <message>` | Send a message to the primary mesh channel | `$txt Hello mesh!` |
-| `$send "<name>" <message>` | Send to a specific node (fuzzy longname match) | `$send "John Base" Ping?` |
-| `$nodes` | List all known nodes (paged embeds) | `$nodes` |
-| `$activenodes` | Nodes heard in last 60 minutes (paged embeds) | `$activenodes` |
-| `$stats [hours]` | Network stats embed for the last N hours | `$stats 12` |
-| `$last [N]` | Show last N text messages (default 10, up to 50) | `$last 25` |
-| `$find <text> [N]` | Search recent message text | `$find sos 20` |
-| `$whois <name-or-id>` | Show a node’s details (name, id, hops, last heard) | `$whois !433d1b18` |
-| `$uptime` | Show bot uptime | `$uptime` |
-| `$status` | Bridge status/health snapshot | `$status` |
-| `$bridge on|off` | Enable/disable mesh→Discord relay globally | `$bridge off` |
+### Movement Detection
+- Automatically detects when nodes move >100 meters
+- Sends Discord notifications with movement details
+- Tracks route quality and signal strength
 
----
+## 🎮 Usage Examples
 
-## 📅 Daily Digest
+### Basic Communication
+```
+# Send message to mesh network
+$txt Hello mesh network!
 
-- Runs once per day at `DIGEST_HOUR_LOCAL` in `DIGEST_TZ`.
-- Embed includes:
-  - Total **Messages** in the window (`DIGEST_HOURS`, default 24h)
-  - **Active nodes** and **New nodes**
-  - **Avg SNR / Avg RSSI**
-  - **Top 5 talkers** (by message count)
-- To disable: set `DIGEST_ENABLED=0`
+# Send message to specific node
+$send WeatherStation Temperature check please
 
-> Digest is posted only once per date (guards against loop frequency).
-
----
-
-## 🧠 How names & metrics are resolved
-
-- On every text message, the bot:
-  - Stores message metadata (from/to node IDs, text, hops, SNR/RSSI) in SQLite.
-  - Tries to resolve **long_name** or **short_name** from the `nodes` table.
-  - Updates `last_heard` for the sender (and recipient if known).
-- Node entries are inserted/updated when node info/telemetry packets are seen.
-
----
-
-## 🗂️ Database
-
-- File: `meshtastic.db` (SQLite)
-- Main tables (typical):
-  - `nodes` – node_id, long/short names, last_heard, hops, etc.
-  - `telemetry` – recent node telemetry (battery/temp/etc.)
-  - `positions` – location data when available
-  - `messages` – text message logs with link metrics
-- Helpers used by the bot for stats/digest:
-  - `count_messages_since(since_iso)`
-  - `top_talkers_since(since_iso, limit)`
-  - `new_nodes_since(since_iso)`
-  - `avg_link_quality_since(since_iso)`
-  - `get_recent_messages(limit)`, `search_messages(query, limit)`
-  - `get_node_by_id(node_id)`, `find_node_by_name(name)`
-
-### Maintenance
-
-A helper script is included:
-
-```bash
-python maintain_db.py --stats
-python maintain_db.py --prune --older-than-days 30
+# Ping test
+ping
 ```
 
-> Always back up `meshtastic.db` before pruning.
+### Network Analysis
+```
+# View network topology
+$topo
+
+# Trace route to a node
+$trace WeatherStation
+
+# Monitor live activity
+$live
+
+# Check network statistics
+$stats
+```
+
+### Telemetry Monitoring
+```
+# View current telemetry
+$telem
+
+# Check specific node telemetry
+$telem WeatherStation
+```
+
+## 🔧 Advanced Features
+
+### Live Monitoring
+- Real-time packet monitoring with `$live`
+- Shows packet types, sources, and signal quality
+- 1-minute monitoring sessions with manual stop
+- Cooldown protection to prevent abuse
+
+### Route Tracing
+- Visual hop-by-hop path analysis
+- Signal quality indicators for each hop
+- Route quality assessment
+- Connection statistics
+
+### Movement Detection
+- Automatic detection of node movement
+- Rich Discord notifications with coordinates
+- Distance and speed indicators
+- Historical position tracking
+
+## 📊 Database Schema
+
+### Tables
+- **nodes**: Node information and status
+- **telemetry**: Sensor data and metrics
+- **positions**: GPS coordinates and movement
+- **messages**: Communication history
+
+### Features
+- Connection pooling for performance
+- WAL mode for concurrency
+- Automatic maintenance and cleanup
+- Indexed queries for speed
+
+## 🛠️ Development
+
+### Project Structure
+```
+Bot/
+├── bot.py              # Main bot application
+├── database.py         # Database management
+├── config.py           # Configuration settings
+├── requirements.txt    # Python dependencies
+└── venv/              # Virtual environment
+```
+
+### Key Components
+- **DiscordBot**: Main bot class with Discord integration
+- **MeshtasticInterface**: Mesh network communication
+- **CommandHandler**: Discord command processing
+- **MeshtasticDatabase**: SQLite database management
+
+## 🐛 Troubleshooting
+
+### Common Issues
+1. **Bot not responding**: Check Discord token and permissions
+2. **No mesh data**: Verify Meshtastic device connection
+3. **Database errors**: Check file permissions and disk space
+4. **Command cooldowns**: Wait 2 seconds between commands
+
+### Debug Commands
+- `$debug` - Show system information
+- `$status` - Check bot and network status
+- Check console logs for detailed error information
+
+## 📈 Performance
+
+### Optimizations
+- Database connection pooling
+- Command result caching
+- Batch message processing
+- Memory-efficient packet buffering
+
+### Monitoring
+- Real-time performance metrics
+- Database health monitoring
+- Network activity tracking
+- Error logging and reporting
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📄 License
+
+This project is open source. Please check the license file for details.
+
+## 🙏 Acknowledgments
+
+- Meshtastic community for the amazing mesh networking platform
+- Discord.py for the excellent Discord API wrapper
+- All contributors and testers
+
+## 📞 Support
+
+For issues and questions:
+1. Check the troubleshooting section
+2. Review console logs
+3. Create an issue on GitHub
+4. Join the Meshtastic Discord community
 
 ---
 
-## 🧪 Running tips
-
-- **Discord permissions**: Ensure the bot can view & post in the `DISCORD_CHANNEL_ID` channel.
-- **Meshtastic connection**: Verify `MESHTASTIC_HOSTNAME` (TCP) or adapt for serial if that’s your setup.
-- **Busy meshes**: Tune `RELAY_RATE_LIMIT_PER_MIN` and `DEDUP_WINDOW_SEC` for your traffic patterns.
-- **Windows TZ**: If the digest throws timezone errors, `pip install tzdata` or set `DIGEST_TZ=UTC`.
-
----
-
-## 🛠️ Troubleshooting
-
-- **Longnames still not appearing**  
-  The bot hasn’t learned the node yet. Give it time to see nodeinfo/telemetry. It will fall back to `node_id` until learned.
-
-- **Nothing posts to Discord**  
-  Double‑check `DISCORD_TOKEN`, `DISCORD_CHANNEL_ID`, and channel permissions. Watch the console logs for errors.
-
-- **Rate‑limit drops**  
-  Logs will say “Rate limit reached; dropping message”. Raise `RELAY_RATE_LIMIT_PER_MIN` or lower traffic.
-
-- **Digest not posting**  
-  Confirm `DIGEST_ENABLED=1`, `DIGEST_TZ` is valid, and your system time is correct. On Windows, install `tzdata`.
-
-- **DB locked / busy**  
-  Avoid running multiple copies of the bot pointing at the same DB file.
-
----
-
-## 🔄 Recent changes (this build)
-
-- Longname‑first embeds for mesh→Discord relays
-- Clean embeds for `$last`, `$find`, `$whois`, `$stats`, `$nodes`, `$activenodes`
-- Daily Digest (messages, nodes, link quality, top talkers)
-- `$bridge` toggle + rate limiting + dedup for robustness
-- Safer DB updates and `last_heard` maintenance
-
----
-
-## 🙌 Notes
-
-- This bot is intentionally simple operationally (no per‑channel filters or allowlists).  
-- If you want **topology snapshots**, **keyword watches**, **CSV exports**, or **quiet hours**, say the word and we’ll extend this build.
-
----
-
-**Happy meshing!**
+**Happy Meshing!** 🌐📡
