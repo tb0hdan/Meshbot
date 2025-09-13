@@ -47,13 +47,13 @@ A powerful Discord bot that bridges communication between Discord and Meshtastic
 ### Prerequisites
 - Python 3.11+
 - Discord Bot Token
-- Meshtastic device or connection
+- Meshtastic device (USB, TCP/IP, or Bluetooth connection)
 
 ### Installation
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/n30nex/Meshbot/
+   git clone https://github.com/yourusername/Meshbot.git
    cd Meshbot
    ```
 
@@ -71,10 +71,14 @@ A powerful Discord bot that bridges communication between Discord and Meshtastic
    ```
 
 4. **Configure the bot**
-   - Update `src/config/config.py` with your settings:
-     - Discord Bot Token
-     - Meshtastic connection details
-     - Database configuration
+   - Copy the sample environment file:
+     ```bash
+     cp sampledotenvfile .env
+     ```
+   - Edit `.env` with your settings:
+     - `DISCORD_TOKEN` - Your Discord bot token
+     - `DISCORD_CHANNEL_ID` - Discord channel ID for messages
+     - `MESHTASTIC_HOSTNAME` - IP/hostname (optional, defaults to serial)
 
 5. **Run the bot**
    ```bash
@@ -84,19 +88,22 @@ A powerful Discord bot that bridges communication between Discord and Meshtastic
 ## ⚙️ Configuration
 
 ### Environment Variables
-Create a `.env` file with:
+Create a `.env` file based on `sampledotenvfile`:
 ```env
 DISCORD_TOKEN=your_discord_bot_token
-MESHTASTIC_DEVICE=/dev/ttyUSB0  # or your device path
-DATABASE_PATH=meshtastic.db
+DISCORD_CHANNEL_ID=your_channel_id
+MESHTASTIC_HOSTNAME=192.168.1.100  # Optional - IP/hostname for TCP connection
+# Leave MESHTASTIC_HOSTNAME empty to use serial/USB connection
 ```
 
 ### Database
-The bot uses SQLite with automatic schema management:
-- **Nodes**: Mesh network node information
-- **Telemetry**: Sensor data from nodes
+The bot uses SQLite with automatic schema management and migration:
+- **Nodes**: Mesh network node information and status
+- **Telemetry**: Sensor data (battery, temperature, humidity, pressure, air quality)
 - **Positions**: GPS coordinates and movement tracking
-- **Messages**: Communication history
+- **Messages**: Bidirectional communication history
+- **Automatic Maintenance**: Database cleanup runs periodically
+- **WAL Mode**: Enabled for concurrent access and better performance
 
 ## 📡 Meshtastic Integration
 
@@ -185,6 +192,26 @@ $telem WeatherStation
 - Automatic maintenance and cleanup
 - Indexed queries for speed
 
+## 🧪 Testing
+
+### Running Tests
+```bash
+# Run all tests
+make test
+
+# Run with coverage
+pytest --cov=src --cov-report=term-missing
+
+# Run specific test module
+pytest src/commands/test_basic.py
+```
+
+### Linting
+```bash
+# Run linter
+make lint
+```
+
 ## 🛠️ Development
 
 ### Project Structure
@@ -230,8 +257,15 @@ Meshbot/
 - **src/bot/bot.py**: Bot orchestration and coordination
 - **src/transport/discord/**: Discord integration modules
 - **src/transport/meshtastic/**: Meshtastic communication
-- **src/commands/**: Modular command system
-- **src/database/**: Modular database management system
+- **src/commands/**: Modular command system with specialized handlers
+- **src/database/**: Modular database management with connection pooling
+- **src/config/config.py**: Centralized configuration management
+
+### Test Coverage
+- **159 tests** covering all major functionality
+- **70% code coverage** across the codebase
+- Tests co-located with modules for better maintainability
+- Comprehensive fixtures for database and command testing
 
 ## 🐛 Troubleshooting
 
@@ -263,10 +297,15 @@ Meshbot/
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+4. Run tests (`make test`)
+5. Run linter (`make lint`)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Submit a pull request
+
+Please ensure all tests pass and code follows the project's style guidelines.
 
 ## 📄 License
 
@@ -281,10 +320,14 @@ This project is open source. Please check the license file for details.
 ## 📞 Support
 
 For issues and questions:
-1. Check the troubleshooting section
-2. Review console logs
-3. Create an issue on GitHub
-4. Join the Canadaverse
+1. Check the troubleshooting section above
+2. Review console logs for detailed error information
+3. Check `docs/PROJECT_NOTES.md` for technical details
+4. Create an issue on GitHub with:
+   - Error messages and logs
+   - Steps to reproduce
+   - System information
+5. Join the community discussion
 
 ---
 

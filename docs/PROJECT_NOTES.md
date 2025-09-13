@@ -128,64 +128,38 @@ The bot subscribes to Meshtastic packet events using pypubsub:
 
 All timestamps are stored in UTC format.
 
-## Recent Updates (2025-09-12)
+## Recent Updates
 
-### Major Code Restructure
-- **Project restructure**: Moved from monolithic architecture to modular src/ structure
-- **Database restructure**: Split monolithic database.py into specialized modules:
-  - `src/database/connection.py` - Connection management
-  - `src/database/manager.py` - Main database coordinator
-  - `src/database/nodes.py` - Node operations
-  - `src/database/telemetry.py` - Telemetry data handling
-  - `src/database/positions.py` - Position tracking
-  - `src/database/messages.py` - Message history
-  - `src/database/schema.py` - Schema definitions
-  - `src/database/maintenance.py` - Maintenance utilities
-- **Command system restructure**: Split command handler into specialized modules:
-  - `src/commands/basic.py` - Basic commands (help, txt, send, nodes)
-  - `src/commands/debug.py` - Debug and admin commands
-  - `src/commands/monitoring.py` - Live monitoring and telemetry
-  - `src/commands/network.py` - Network analysis (topo, trace, stats)
-- **Discord transport restructure**: Modularized Discord integration:
-  - `src/transport/discord/embed_utils.py` - Embed formatting
-  - `src/transport/discord/message_handlers.py` - Message processing
-  - `src/transport/discord/packet_processors.py` - Packet processing
-  - `src/transport/discord/task_managers.py` - Background tasks
-- **Entry point**: Renamed main.py to meshbot.py for clarity
+### 2025-09-13 - Test Suite Complete
+- **Test Coverage**: All 159 tests passing with 70% code coverage
+- **Database Fixes**:
+  - Fixed timezone handling in node operations using UTC timestamps
+  - Resolved SQLite boolean comparison issues (using 0/1 instead of True/False)
+  - Enhanced NULL value handling with proper default values
+  - Fixed position retrieval ordering for deterministic results
+  - Corrected foreign key constraint validation logic
 
-### Thread Safety Improvements
-- Added async locks to cache decorator for thread-safe operation
-- Implemented packet buffer lock for concurrent access protection
-- Added proper queue size limits with configurable maximum (default: 1000)
-
-### Error Handling Enhancements
-- Improved message validation to reject control characters
-- Added queue overflow handling with user feedback
-- Enhanced database shutdown procedures with proper cleanup
-- Fixed exception handling to use specific exception types
-
-### Configuration Management
-- Moved config.py to src/config/config.py
-- Integrated config.py with bot initialization
-- Made queue sizes configurable via BOT_CONFIG
-- Fixed active_node_threshold to match documentation (60 minutes)
-- Added fallback for missing config imports
-
-### Database Improvements
-- Added context manager support (__enter__/__exit__)
-- Implemented proper shutdown flag for maintenance thread
-- Enhanced column validation in schema migration
-- Added graceful shutdown with thread cleanup
-- Modularized database operations for better maintainability
-
-### Test Suite Enhancements (2025-09-13)
-- Fixed all failing tests related to database operations and timezone handling
-- Improved timezone handling in node operations using UTC timestamps
-- Fixed SQLite boolean comparison issues (using 0/1 instead of True/False)
-- Enhanced NULL value handling with proper default values
-- Fixed position retrieval ordering for deterministic results
-- Corrected foreign key constraint validation logic
-- All 159 tests now pass with 70% code coverage
+### 2025-09-12 - Major Architecture Refactor
+- **Modular Architecture**: Transitioned from monolithic to modular src/ structure
+- **Database System Overhaul**:
+  - Split database.py into specialized modules (connection, manager, nodes, telemetry, positions, messages, schema, maintenance)
+  - Added context manager support with proper shutdown procedures
+  - Implemented thread-safe operations with proper locking
+- **Command System Refactor**:
+  - Organized commands into logical modules (basic, debug, monitoring, network)
+  - Improved command handler architecture for better maintainability
+- **Discord Integration**:
+  - Modularized Discord components (embed_utils, message_handlers, packet_processors, task_managers)
+  - Enhanced packet processing and message handling
+- **Thread Safety & Error Handling**:
+  - Added async locks for cache decorator
+  - Implemented packet buffer locks for concurrent access
+  - Enhanced queue management with configurable limits (default: 1000)
+  - Improved message validation and error reporting
+- **Configuration Management**:
+  - Centralized configuration in src/config/config.py
+  - Made all key parameters configurable
+  - Fixed active_node_threshold to match documentation (60 minutes)
 
 ## Important Considerations
 
