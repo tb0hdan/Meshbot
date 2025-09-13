@@ -2,59 +2,70 @@
 import asyncio
 import functools
 import logging
+import math
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 import discord
 
-from src.database import MeshtasticDatabase
-
 logger = logging.getLogger(__name__)
+
+
+class FunctionCache: #pylint: disable=too-few-public-methods
+    """Cache implementation for function results"""
+
+    def __init__(self):
+        self.cache = {}
+        self.timestamps = {}
+        self.lock = asyncio.Lock()
+
+    async def get_or_set(self, cache_key, fetch_func, ttl_seconds, *args, **kwargs):
+        """Get cached result or call function and cache result"""
+        async with self.lock:
+            current_time = time.time()
+
+            # Check if cached result exists and is still valid
+            if (cache_key in self.cache and
+                cache_key in self.timestamps and
+                current_time - self.timestamps[cache_key] < ttl_seconds):
+                logger.debug("Cache hit for %s", fetch_func.__name__)
+                return self.cache[cache_key]
+
+            # Call the actual function
+            logger.debug("Cache miss for %s", fetch_func.__name__)
+            result = await fetch_func(*args, **kwargs)
+
+            # Store result in cache
+            self.cache[cache_key] = result
+            self.timestamps[cache_key] = current_time
+
+            # Clean old cache entries
+            expired_keys = [
+                key for key, timestamp in self.timestamps.items()
+                if current_time - timestamp >= ttl_seconds
+            ]
+            for key in expired_keys:
+                self.cache.pop(key, None)
+                self.timestamps.pop(key, None)
+
+            return result
 
 
 def cache_result(ttl_seconds=300):
     """Cache function results for a specified time (thread-safe)"""
     def decorator(func):
-        # Use the function object as the cache key base
-        if not hasattr(func, '_cache'):
-            func._cache = {}
-            func._cache_timestamps = {}
-            func._cache_lock = asyncio.Lock()
+        # Create cache instance for this function
+        if not hasattr(func, 'cache_instance'):
+            func.cache_instance = FunctionCache()
 
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             # Create a cache key from function arguments
             cache_key = str(args) + str(sorted(kwargs.items()))
-
-            async with func._cache_lock:  # Thread-safe access
-                current_time = time.time()
-
-                # Check if cached result exists and is still valid
-                if (cache_key in func._cache and
-                    cache_key in func._cache_timestamps and
-                    current_time - func._cache_timestamps[cache_key] < ttl_seconds):
-                    logger.debug("Cache hit for %s", func.__name__)
-                    return func._cache[cache_key]
-
-                # Call the actual function
-                logger.debug("Cache miss for %s", func.__name__)
-                result = await func(*args, **kwargs)
-
-                # Store result in cache
-                func._cache[cache_key] = result
-                func._cache_timestamps[cache_key] = current_time
-
-                # Clean old cache entries
-                expired_keys = [
-                    key for key, timestamp in func._cache_timestamps.items()
-                    if current_time - timestamp >= ttl_seconds
-                ]
-                for key in expired_keys:
-                    func._cache.pop(key, None)
-                    func._cache_timestamps.pop(key, None)
-
-                return result
+            return await func.cache_instance.get_or_set(
+                cache_key, func, ttl_seconds, *args, **kwargs
+            )
 
         return wrapper
     return decorator
@@ -96,7 +107,7 @@ class BaseCommandMixin:
             self._node_cache[key] = data
             self._cache_timestamps[key] = now
             return data
-        except Exception as e:
+        except (OSError, ValueError, TypeError, KeyError) as e:
             logger.error("Error fetching data for cache key %s: %s", key, e)
             # Return cached data if available, even if stale
             return self._node_cache.get(key, [])
@@ -117,7 +128,7 @@ class BaseCommandMixin:
                 chunks = [message[i:i+1900] for i in range(0, len(message), 1900)]
                 for chunk in chunks:
                     await channel.send(chunk)
-        except Exception as e:
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
             logger.error("Error sending long message: %s", e)
             # Try to send a simple error message
             try:
@@ -129,28 +140,43 @@ class BaseCommandMixin:
         """Safely send a message to a channel with error handling"""
         try:
             await channel.send(message)
-        except Exception as e:
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
             logger.error("Error sending message to channel: %s", e)
+
+    def _get_node_basic_info(self, node: Dict[str, Any]) -> tuple:
+        """Extract basic node information"""
+        return (
+            str(node.get('long_name', 'Unknown')),
+            str(node.get('node_id', 'Unknown')),
+            str(node.get('node_num', 'Unknown')),
+            str(node.get('hops_away', '0')),
+            str(node.get('snr', '?'))
+        )
+
+    def _get_node_telemetry(self, node: Dict[str, Any]) -> tuple:
+        """Extract node telemetry information"""
+        battery = (f"{node.get('battery_level', 'N/A')}%"
+                   if node.get('battery_level') is not None else "N/A")
+        temperature = (f"{node.get('temperature', 'N/A'):.1f}°C"
+                       if node.get('temperature') is not None else "N/A")
+        return battery, temperature
+
+    def _get_node_last_heard(self, node: Dict[str, Any]) -> str:
+        """Get formatted last heard time"""
+        if node.get('last_heard'):
+            try:
+                last_heard = datetime.fromisoformat(node['last_heard'])
+                return last_heard.strftime('%H:%M:%S')
+            except (ValueError, TypeError, AttributeError):
+                return "Unknown"
+        return "Unknown"
 
     def _format_node_info(self, node: Dict[str, Any]) -> str:
         """Format node information for display"""
         try:
-            long_name = str(node.get('long_name', 'Unknown'))
-            node_id = str(node.get('node_id', 'Unknown'))
-            node_num = str(node.get('node_num', 'Unknown'))
-            hops_away = str(node.get('hops_away', '0'))
-            snr = str(node.get('snr', '?'))
-            battery = f"{node.get('battery_level', 'N/A')}%" if node.get('battery_level') is not None else "N/A"
-            temperature = f"{node.get('temperature', 'N/A'):.1f}°C" if node.get('temperature') is not None else "N/A"
-
-            if node.get('last_heard'):
-                try:
-                    last_heard = datetime.fromisoformat(node['last_heard'])
-                    time_str = last_heard.strftime('%H:%M:%S')
-                except (ValueError, TypeError, AttributeError):
-                    time_str = "Unknown"
-            else:
-                time_str = "Unknown"
+            long_name, node_id, node_num, hops_away, snr = self._get_node_basic_info(node)
+            battery, temperature = self._get_node_telemetry(node)
+            time_str = self._get_node_last_heard(node)
 
             return (
                 f"**{long_name}** (ID: {node_id}, Num: {node_num}) - "
@@ -158,32 +184,41 @@ class BaseCommandMixin:
                 f"Temp: {temperature}, Last: {time_str}"
             )
 
-        except Exception as e:
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
             logger.error("Error formatting node info: %s", e)
             return f"**Node {node.get('node_id', 'Unknown')}** - Error formatting data"
+
+    def _convert_coords_to_radians(self, lat1: float, lon1: float,
+                                   lat2: float, lon2: float) -> tuple:
+        """Convert coordinates to radians"""
+        return (
+            math.radians(lat1),
+            math.radians(lon1),
+            math.radians(lat2),
+            math.radians(lon2)
+        )
+
+    def _apply_haversine_formula(self, lat1_rad: float, lon1_rad: float,
+                                lat2_rad: float, lon2_rad: float) -> float:
+        """Apply Haversine formula to calculate angular distance"""
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = (math.sin(dlat/2)**2 +
+             math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2)
+        return 2 * math.asin(math.sqrt(a))
 
     def calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate distance between two coordinates in meters using Haversine formula"""
         try:
-            import math
-
-            # Convert to radians
-            lat1_rad = math.radians(lat1)
-            lon1_rad = math.radians(lon1)
-            lat2_rad = math.radians(lat2)
-            lon2_rad = math.radians(lon2)
-
-            # Haversine formula
-            dlat = lat2_rad - lat1_rad
-            dlon = lon2_rad - lon1_rad
-            a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
-            c = 2 * math.asin(math.sqrt(a))
+            lat1_rad, lon1_rad, lat2_rad, lon2_rad = self._convert_coords_to_radians(
+                lat1, lon1, lat2, lon2
+            )
+            c = self._apply_haversine_formula(lat1_rad, lon1_rad, lat2_rad, lon2_rad)
 
             # Earth's radius in meters
             earth_radius = 6371000
-            distance = earth_radius * c
+            return earth_radius * c
 
-            return distance
-        except Exception as e:
+        except (ValueError, TypeError, ZeroDivisionError, OverflowError) as e:
             logger.error("Error calculating distance: %s", e)
             return 0.0
