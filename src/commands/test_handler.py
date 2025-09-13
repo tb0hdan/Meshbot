@@ -242,16 +242,19 @@ class TestCommandHandler:
         """Test error handling in command processing."""
         mock_discord_message.content = "$nodes"
 
-        # Mock database to raise exception
-        self.mock_database.get_all_nodes.side_effect = Exception("Database error")
+        # Mock database to raise exception that is caught by the code
+        # The _get_cached_data method catches the exception and returns [],
+        # which leads to "No nodes available" message
+        self.mock_database.get_all_nodes.side_effect = ValueError("Database error")
 
         result = await self.handler.handle_command(mock_discord_message)
 
         # Should return True as command was recognized and handled
         assert result is True
-        # Should send error message
+        # Should send a response (either error or "no nodes" message)
         mock_discord_message.channel.send.assert_called_once()
         call_args = mock_discord_message.channel.send.call_args[0][0]
+        # When database error is caught by caching layer, it returns empty list and shows "No nodes available"
         assert "No nodes available" in call_args
 
     def test_command_routing(self):

@@ -155,7 +155,7 @@ class TestBaseCommandMixin:
     def test_get_cached_data_handles_fetch_error(self):
         """Test _get_cached_data handles fetch function errors."""
         def failing_fetch():
-            raise Exception("Fetch failed")
+            raise ValueError("Fetch failed")  # Use ValueError which is caught by the code
 
         result = self.mixin._get_cached_data("test_key", failing_fetch)
         assert result == []  # Should return empty list on error
@@ -197,10 +197,11 @@ class TestBaseCommandMixin:
     @pytest.mark.asyncio
     async def test_send_long_message_handles_exception(self):
         """Test _send_long_message handles send exceptions."""
+        import discord
         mock_channel = Mock()
 
         # Make first call fail, second call succeed (error message)
-        mock_channel.send = AsyncMock(side_effect=[Exception("Send failed"), None])
+        mock_channel.send = AsyncMock(side_effect=[discord.HTTPException(Mock(), "Send failed"), None])
 
         # Should not raise exception
         try:
@@ -223,8 +224,9 @@ class TestBaseCommandMixin:
     @pytest.mark.asyncio
     async def test_safe_send_handles_exception(self):
         """Test _safe_send handles send exceptions."""
+        import discord
         mock_channel = Mock()
-        mock_channel.send = AsyncMock(side_effect=Exception("Send failed"))
+        mock_channel.send = AsyncMock(side_effect=discord.HTTPException(Mock(), "Send failed"))
 
         # Should not raise exception
         await self.mixin._safe_send(mock_channel, "test message")

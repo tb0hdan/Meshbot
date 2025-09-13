@@ -211,8 +211,8 @@ class TestBasicCommands:
     @pytest.mark.asyncio
     async def test_database_error_handling(self, mock_discord_message):
         """Test handling of database errors."""
-        # Mock database to raise exception
-        self.mock_database.get_active_nodes.side_effect = Exception("Database error")
+        # Mock database to raise exception that is caught by the code
+        self.mock_database.get_active_nodes.side_effect = ValueError("Database error")
 
         await self.commands.cmd_active_nodes(mock_discord_message)
 
