@@ -78,7 +78,7 @@ A powerful Discord bot that bridges communication between Discord and Meshtastic
 
 5. **Run the bot**
    ```bash
-   python bot.py
+   python meshbot.py
    ```
 
 ## ⚙️ Configuration
@@ -259,6 +259,3 @@ For issues and questions:
 ---
 
 **Happy Meshing!** 🌐📡
-
-
-

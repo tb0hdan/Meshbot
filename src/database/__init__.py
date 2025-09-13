@@ -1,5 +1,8 @@
-"""Database module for Meshbot application.
-
-Contains SQLite database management for Meshtastic data storage.
 """
-from .database import MeshtasticDatabase
+Database package for Meshtastic Discord Bridge Bot
+Provides organized, modular database operations
+"""
+
+from .manager import MeshtasticDatabase
+
+__all__ = ['MeshtasticDatabase']
