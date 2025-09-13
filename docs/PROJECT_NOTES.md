@@ -14,10 +14,10 @@ This is a Discord bot that bridges communication between Discord and Meshtastic 
 pip install -r requirements.txt
 
 # Run the bot
-python bot.py
+python meshbot.py
 
-# Run database maintenance (optional)
-python maintain_db.py
+# Run database maintenance (optional, now integrated)
+# Database maintenance is handled automatically via the modular database system
 ```
 
 ### Environment Setup
@@ -30,27 +30,45 @@ Create a `.env` file based on `sampledotenvfile`:
 
 ### Core Components
 
-1. **bot.py** - Main application entry point containing:
-   - `DiscordBot` class - Discord client implementation with command handling
-   - `MeshtasticInterface` class - Handles Meshtastic radio communication
-   - `CommandHandler` class - Processes Discord commands and generates responses
-   - `Config` dataclass - Configuration management
+1. **meshbot.py** - Main application entry point (renamed from main.py)
 
-2. **database.py** - SQLite database management:
-   - `MeshtasticDatabase` class - Handles all database operations
-   - Tables: nodes, telemetry, positions, messages
-   - Connection pooling and WAL mode for performance
-   - Automatic schema management
+2. **src/bot/bot.py** - Bot orchestration:
+   - Main bot initialization and coordination
+   - Integration between Discord and Meshtastic components
 
-3. **config.py** - Configuration settings:
+3. **src/transport/discord/** - Discord integration:
+   - `discord.py` - Discord client implementation
+   - `embed_utils.py` - Discord embed formatting utilities
+   - `message_handlers.py` - Message processing and handling
+   - `packet_processors.py` - Meshtastic packet processing for Discord
+   - `task_managers.py` - Background task management
+
+4. **src/transport/meshtastic/meshtastic.py** - Meshtastic interface:
+   - Handles Meshtastic radio communication
+   - Packet subscription and event handling
+
+5. **src/commands/** - Command system:
+   - `handler.py` - Main command handler (legacy, mostly moved to specialized modules)
+   - `base.py` - Base command classes and utilities
+   - `basic.py` - Basic commands (help, txt, send, nodes, etc.)
+   - `debug.py` - Debug and administrative commands
+   - `monitoring.py` - Live monitoring and telemetry commands
+   - `network.py` - Network analysis commands (topo, trace, stats)
+
+6. **src/database/** - Modular database system:
+   - `connection.py` - Database connection management
+   - `manager.py` - Main database manager
+   - `schema.py` - Schema definitions and migrations
+   - `nodes.py` - Node-related database operations
+   - `telemetry.py` - Telemetry data management
+   - `positions.py` - Position tracking
+   - `messages.py` - Message history
+   - `maintenance.py` - Database maintenance utilities
+
+7. **src/config/config.py** - Configuration settings:
    - Bot behavior settings (message length, timeouts, intervals)
    - Command aliases and display templates
    - Logging configuration
-
-4. **maintain_db.py** - Database maintenance utility:
-   - Cleanup old records
-   - Optimize database performance
-   - Backup functionality
 
 ### Key Design Patterns
 
@@ -88,6 +106,29 @@ All timestamps are stored in UTC format.
 
 ## Recent Updates (2025-09-12)
 
+### Major Code Restructure
+- **Project restructure**: Moved from monolithic architecture to modular src/ structure
+- **Database restructure**: Split monolithic database.py into specialized modules:
+  - `src/database/connection.py` - Connection management
+  - `src/database/manager.py` - Main database coordinator
+  - `src/database/nodes.py` - Node operations
+  - `src/database/telemetry.py` - Telemetry data handling
+  - `src/database/positions.py` - Position tracking
+  - `src/database/messages.py` - Message history
+  - `src/database/schema.py` - Schema definitions
+  - `src/database/maintenance.py` - Maintenance utilities
+- **Command system restructure**: Split command handler into specialized modules:
+  - `src/commands/basic.py` - Basic commands (help, txt, send, nodes)
+  - `src/commands/debug.py` - Debug and admin commands
+  - `src/commands/monitoring.py` - Live monitoring and telemetry
+  - `src/commands/network.py` - Network analysis (topo, trace, stats)
+- **Discord transport restructure**: Modularized Discord integration:
+  - `src/transport/discord/embed_utils.py` - Embed formatting
+  - `src/transport/discord/message_handlers.py` - Message processing
+  - `src/transport/discord/packet_processors.py` - Packet processing
+  - `src/transport/discord/task_managers.py` - Background tasks
+- **Entry point**: Renamed main.py to meshbot.py for clarity
+
 ### Thread Safety Improvements
 - Added async locks to cache decorator for thread-safe operation
 - Implemented packet buffer lock for concurrent access protection
@@ -100,6 +141,7 @@ All timestamps are stored in UTC format.
 - Fixed exception handling to use specific exception types
 
 ### Configuration Management
+- Moved config.py to src/config/config.py
 - Integrated config.py with bot initialization
 - Made queue sizes configurable via BOT_CONFIG
 - Fixed active_node_threshold to match documentation (60 minutes)
@@ -110,6 +152,7 @@ All timestamps are stored in UTC format.
 - Implemented proper shutdown flag for maintenance thread
 - Enhanced column validation in schema migration
 - Added graceful shutdown with thread cleanup
+- Modularized database operations for better maintainability
 
 ## Important Considerations
 

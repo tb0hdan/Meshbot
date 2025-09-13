@@ -71,7 +71,7 @@ A powerful Discord bot that bridges communication between Discord and Meshtastic
    ```
 
 4. **Configure the bot**
-   - Copy `config.py` and update with your settings:
+   - Update `src/config/config.py` with your settings:
      - Discord Bot Token
      - Meshtastic connection details
      - Database configuration
@@ -189,19 +189,49 @@ $telem WeatherStation
 
 ### Project Structure
 ```
-Bot/
-├── bot.py              # Main bot application
-├── database.py         # Database management
-├── config.py           # Configuration settings
-├── requirements.txt    # Python dependencies
-└── venv/              # Virtual environment
+Meshbot/
+├── meshbot.py                           # Main application entry point
+├── src/
+│   ├── bot/
+│   │   └── bot.py                       # Bot orchestration
+│   ├── commands/
+│   │   ├── base.py                      # Base command classes
+│   │   ├── basic.py                     # Basic commands (help, txt, send)
+│   │   ├── debug.py                     # Debug and admin commands
+│   │   ├── monitoring.py                # Live monitoring and telemetry
+│   │   ├── network.py                   # Network analysis commands
+│   │   └── handler.py                   # Legacy command handler
+│   ├── config/
+│   │   └── config.py                    # Configuration settings
+│   ├── database/
+│   │   ├── connection.py                # Database connections
+│   │   ├── manager.py                   # Database coordinator
+│   │   ├── schema.py                    # Schema definitions
+│   │   ├── nodes.py                     # Node operations
+│   │   ├── telemetry.py                 # Telemetry data
+│   │   ├── positions.py                 # Position tracking
+│   │   ├── messages.py                  # Message history
+│   │   └── maintenance.py               # Database maintenance
+│   └── transport/
+│       ├── discord/
+│       │   ├── discord.py               # Discord client
+│       │   ├── embed_utils.py           # Embed formatting
+│       │   ├── message_handlers.py      # Message processing
+│       │   ├── packet_processors.py     # Packet processing
+│       │   └── task_managers.py         # Background tasks
+│       └── meshtastic/
+│           └── meshtastic.py            # Meshtastic interface
+├── requirements.txt                     # Python dependencies
+└── venv/                               # Virtual environment
 ```
 
 ### Key Components
-- **DiscordBot**: Main bot class with Discord integration
-- **MeshtasticInterface**: Mesh network communication
-- **CommandHandler**: Discord command processing
-- **MeshtasticDatabase**: SQLite database management
+- **meshbot.py**: Main application entry point
+- **src/bot/bot.py**: Bot orchestration and coordination
+- **src/transport/discord/**: Discord integration modules
+- **src/transport/meshtastic/**: Meshtastic communication
+- **src/commands/**: Modular command system
+- **src/database/**: Modular database management system
 
 ## 🐛 Troubleshooting
 
