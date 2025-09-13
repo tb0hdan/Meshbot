@@ -254,10 +254,11 @@ For issues and questions:
 1. Check the troubleshooting section
 2. Review console logs
 3. Create an issue on GitHub
-4. Join the Meshtastic Discord community
+4. Join the Canadaverse
 
 ---
 
 **Happy Meshing!** 🌐📡
+
 
 
