@@ -6,7 +6,7 @@ Handles all node-related database operations
 import sqlite3
 import logging
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +54,12 @@ class NodeOperations:
                         node_data.get('hw_model'),
                         node_data.get('firmware_version'),
                         node_data.get('last_heard'),
-                        node_data.get('hops_away', 0),
-                        node_data.get('is_router', False),
-                        node_data.get('is_client', True),
+                        node_data.get('hops_away') if node_data.get('hops_away') is not None
+                        else 0,
+                        node_data.get('is_router') if node_data.get('is_router') is not None
+                        else False,
+                        node_data.get('is_client') if node_data.get('is_client') is not None
+                        else True,
                         node_data['node_id']
                     ))
 
@@ -88,9 +91,12 @@ class NodeOperations:
                         node_data.get('hw_model'),
                         node_data.get('firmware_version'),
                         node_data.get('last_heard'),
-                        node_data.get('hops_away', 0),
-                        node_data.get('is_router', False),
-                        node_data.get('is_client', True)
+                        node_data.get('hops_away') if node_data.get('hops_away') is not None
+                        else 0,
+                        node_data.get('is_router') if node_data.get('is_router') is not None
+                        else False,
+                        node_data.get('is_client') if node_data.get('is_client') is not None
+                        else True
                     ))
                     return True, True  # (success, is_new_node)
 
@@ -112,7 +118,7 @@ class NodeOperations:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.cursor()
 
-                cutoff_time = datetime.now() - timedelta(minutes=minutes)
+                cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
                 cursor.execute("""
                     SELECT n.*,

@@ -148,7 +148,7 @@ class DatabaseSchema:
             "CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_nodes_long_name ON nodes (long_name)"
         ]
-        
+
         for index_sql in indexes:
             cursor.execute(index_sql)
 

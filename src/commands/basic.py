@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class BasicCommands(BaseCommandMixin):
     """Basic command functionality"""
-    
+
     def __init__(self, meshtastic, discord_to_mesh: queue.Queue, database):
         super().__init__()
         self.meshtastic = meshtastic
@@ -98,7 +98,7 @@ class BasicCommands(BaseCommandMixin):
             return
 
         await self._safe_send(
-            message.channel, 
+            message.channel,
             f"📤 Sending to primary channel:\n```{message_text}```"
         )
         self.discord_to_mesh.put(message_text)
@@ -131,7 +131,7 @@ class BasicCommands(BaseCommandMixin):
                 node = self.database.find_node_by_name(node_name)
                 if not node:
                     await self._safe_send(
-                        message.channel, 
+                        message.channel,
                         f"❌ No node found with name '{node_name}'. "
                         f"Try using `$nodes` to see available nodes."
                     )
@@ -164,7 +164,7 @@ class BasicCommands(BaseCommandMixin):
             # Validate message doesn't contain control characters
             if any(ord(c) < 32 and c not in '\n\r\t' for c in message_text):
                 await self._safe_send(
-                    message.channel, 
+                    message.channel,
                     "❌ Message contains invalid control characters."
                 )
                 return
@@ -173,14 +173,14 @@ class BasicCommands(BaseCommandMixin):
             try:
                 self.discord_to_mesh.put(f"nodenum={final_node_id} {message_text}", timeout=1)
                 await self._safe_send(
-                    message.channel, 
+                    message.channel,
                     f"📤 Sending to node **{node['long_name']}** "
                     f"(ID: {final_node_id}):\n```{message_text}```"
                 )
                 logger.info("Sent message with node ID: %s", final_node_id)
             except queue.Full:
                 await self._safe_send(
-                    message.channel, 
+                    message.channel,
                     "❌ Message queue is full. Please try again later."
                 )
                 logger.warning("Discord to mesh queue is full")
@@ -188,7 +188,7 @@ class BasicCommands(BaseCommandMixin):
         except Exception as e:
             logger.error("Error parsing send command: %s", e)
             await self._safe_send(
-                message.channel, 
+                message.channel,
                 "❌ Error parsing command. Use format: `$send <longname> <message>`"
             )
 

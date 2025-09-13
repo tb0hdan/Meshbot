@@ -5,3 +5,6 @@ pypubsub>=4.0.0
 meshtastic>=2.0.0
 # Tests and linters
 pylint==3.3.8
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov==7.0.0

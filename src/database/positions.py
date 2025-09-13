@@ -59,7 +59,7 @@ class PositionOperations:
                     SELECT latitude, longitude, altitude, speed, heading, accuracy, source, timestamp
                     FROM positions
                     WHERE node_id = ?
-                    ORDER BY timestamp DESC
+                    ORDER BY timestamp DESC, id DESC
                     LIMIT 1
                 """, (node_id,))
 

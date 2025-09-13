@@ -70,6 +70,30 @@ Create a `.env` file based on `sampledotenvfile`:
    - Command aliases and display templates
    - Logging configuration
 
+### Testing Structure
+
+Tests are co-located with the actual code modules rather than in a separate `tests/` directory:
+
+- **src/commands/** - Command tests:
+  - `test_base.py` - Base command functionality tests
+  - `test_basic.py` - Basic command tests
+  - `test_debug.py` - Debug command tests
+  - `test_handler.py` - Command handler tests
+  - `test_monitoring.py` - Monitoring command tests
+  - `test_network.py` - Network analysis command tests
+  - `conftest.py` - Shared test fixtures for commands
+
+- **src/database/** - Database tests:
+  - `test_connection.py` - Database connection tests
+  - `test_manager.py` - Database manager tests
+  - `test_messages.py` - Message operations tests
+  - `test_nodes.py` - Node operations tests
+  - `test_positions.py` - Position operations tests
+  - `test_schema.py` - Schema and migration tests
+  - `conftest.py` - Shared test fixtures for database operations
+
+The test suite uses pytest with coverage reporting and provides comprehensive testing of all database operations, command functionality, and integration points.
+
 ### Key Design Patterns
 
 - **Event-driven architecture** using pypubsub for Meshtastic packet handling
@@ -153,6 +177,15 @@ All timestamps are stored in UTC format.
 - Enhanced column validation in schema migration
 - Added graceful shutdown with thread cleanup
 - Modularized database operations for better maintainability
+
+### Test Suite Enhancements (2025-09-13)
+- Fixed all failing tests related to database operations and timezone handling
+- Improved timezone handling in node operations using UTC timestamps
+- Fixed SQLite boolean comparison issues (using 0/1 instead of True/False)
+- Enhanced NULL value handling with proper default values
+- Fixed position retrieval ordering for deterministic results
+- Corrected foreign key constraint validation logic
+- All 159 tests now pass with 70% code coverage
 
 ## Important Considerations
 

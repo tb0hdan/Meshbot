@@ -67,7 +67,7 @@ MESSAGE_TEMPLATES = {
 }
 
 @dataclass
-class Config:
+class Config:  # pylint: disable=too-many-instance-attributes
     """Configuration class for bot settings"""
     discord_token: str
     channel_id: int

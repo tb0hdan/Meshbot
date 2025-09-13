@@ -1,6 +1,6 @@
 """Network analysis command implementations for Meshbot."""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
 import discord
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class NetworkCommands(BaseCommandMixin):
     """Network analysis and topology command functionality"""
-    
+
     def __init__(self, meshtastic, discord_to_mesh, database):
         super().__init__()
         self.meshtastic = meshtastic
@@ -94,7 +94,7 @@ Avg Hops: {topology['avg_hops']:.1f}""",
 
             if not nodes:
                 await self._safe_send(
-                    message.channel, 
+                    message.channel,
                     "📡 **No nodes available for topology analysis**"
                 )
                 return
@@ -157,9 +157,9 @@ Avg RSSI: {avg_rssi:.1f} dBm""",
             hourly_dist = stats.get('hourly_distribution', {})
             if hourly_dist:
                 # Find peak hours
-                peak_hour = (max(hourly_dist.items(), key=lambda x: x[1]) 
+                peak_hour = (max(hourly_dist.items(), key=lambda x: x[1])
                             if hourly_dist else ("N/A", 0))
-                quiet_hour = (min(hourly_dist.items(), key=lambda x: x[1]) 
+                quiet_hour = (min(hourly_dist.items(), key=lambda x: x[1])
                              if hourly_dist else ("N/A", 0))
 
                 embed.add_field(
@@ -194,7 +194,7 @@ Active Hours: {len(hourly_dist)}""",
             target_node = self.database.find_node_by_name(node_name)
             if not target_node:
                 await self._safe_send(
-                    message.channel, 
+                    message.channel,
                     f"❌ No node found with name '{node_name}'. "
                     f"Try using `$nodes` to see available nodes."
                 )
@@ -232,9 +232,9 @@ Active Hours: {len(hourly_dist)}""",
 
                 # Route statistics
                 total_hops = len(route_path) - 1  # -1 because we don't count the source
-                avg_snr = (sum(hop.get('snr', 0) for hop in route_path[1:]) / 
+                avg_snr = (sum(hop.get('snr', 0) for hop in route_path[1:]) /
                           max(1, len(route_path) - 1))
-                avg_rssi = (sum(hop.get('rssi', 0) for hop in route_path[1:]) / 
+                avg_rssi = (sum(hop.get('rssi', 0) for hop in route_path[1:]) /
                            max(1, len(route_path) - 1))
 
                 embed.add_field(
@@ -264,7 +264,7 @@ Active Hours: {len(hourly_dist)}""",
 
             # Connection quality to target
             connections_to_target = [
-                conn for conn in topology['connections'] 
+                conn for conn in topology['connections']
                 if conn['to_node'] == target_node['node_id']
             ]
             if connections_to_target:
@@ -669,7 +669,7 @@ Art Quality: {'🎨' * min(5, total_nodes // 2)}""",
             if n.get('last_heard'):
                 try:
                     last_heard = datetime.fromisoformat(n['last_heard'].replace('Z', '+00:00'))
-                    if last_heard > datetime.now() - timedelta(hours=1):
+                    if last_heard > datetime.now(timezone.utc) - timedelta(hours=1):
                         active_nodes.append(n)
                 except (ValueError, TypeError) as e:
                     logger.warning("Error parsing last_heard for node %s: %s", n.get('long_name', 'Unknown'), e)

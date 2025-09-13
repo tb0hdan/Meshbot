@@ -17,7 +17,7 @@ class EmbedBuilder:
     """Utility class for creating Discord embeds"""
 
     @staticmethod
-    def create_ping_embed(action: str, description: str, color: int = 0x00ff00, 
+    def create_ping_embed(action: str, description: str, color: int = 0x00ff00,
                          author_name: str = "Unknown") -> discord.Embed:
         """Create a ping test embed"""
         embed = discord.Embed(
@@ -140,7 +140,7 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
-    def create_traceroute_embed(from_name: str, to_name: str, route_text: str, 
+    def create_traceroute_embed(from_name: str, to_name: str, route_text: str,
                                hops_count: int) -> discord.Embed:
         """Create a traceroute result embed"""
         embed = discord.Embed(
@@ -166,9 +166,9 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
-    def create_movement_embed(from_name: str, distance_moved: float, 
-                            old_lat: float, old_lon: float, 
-                            new_lat: float, new_lon: float, 
+    def create_movement_embed(from_name: str, distance_moved: float,
+                            old_lat: float, old_lon: float,
+                            new_lat: float, new_lon: float,
                             new_alt: float) -> discord.Embed:
         """Create a movement notification embed"""
         embed = discord.Embed(
@@ -212,14 +212,14 @@ class EmbedBuilder:
             color=0xff0000,
             timestamp=get_utc_time()
         )
-        
+
         if error_details:
             embed.add_field(
                 name="Error Details",
                 value=f"```{error_details[:500]}```",
                 inline=False
             )
-        
+
         return embed
 
     @staticmethod
@@ -231,14 +231,14 @@ class EmbedBuilder:
             color=0x00ff00,
             timestamp=get_utc_time()
         )
-        
+
         if details:
             embed.add_field(
                 name="Details",
                 value=details,
                 inline=False
             )
-        
+
         return embed
 
     @staticmethod
@@ -250,9 +250,9 @@ class EmbedBuilder:
             color=0x0099ff,
             timestamp=get_utc_time()
         )
-        
+
         if fields:
             for name, value in fields.items():
                 embed.add_field(name=name, value=value, inline=True)
-        
+
         return embed

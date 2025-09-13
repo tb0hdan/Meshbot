@@ -120,9 +120,16 @@ class MessageOperations:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.cursor()
 
-                cutoff_time = datetime.now() - timedelta(hours=hours)
+                if hours > 0:
+                    cutoff_time = datetime.now() - timedelta(hours=hours)
+                    time_filter = "WHERE timestamp > ?"
+                    params = (cutoff_time.isoformat(),)
+                else:
+                    # hours=0 means no time filter
+                    time_filter = ""
+                    params = ()
 
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT
                         COUNT(*) as total_messages,
                         COUNT(DISTINCT from_node_id) as unique_senders,
@@ -131,21 +138,21 @@ class MessageOperations:
                         AVG(snr) as avg_snr,
                         AVG(rssi) as avg_rssi
                     FROM messages
-                    WHERE timestamp > ?
-                """, (cutoff_time.isoformat(),))
+                    {time_filter}
+                """, params)
 
                 stats = cursor.fetchone()
 
                 # Get hourly message distribution
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT
                         strftime('%H', timestamp) as hour,
                         COUNT(*) as message_count
                     FROM messages
-                    WHERE timestamp > ?
+                    {time_filter}
                     GROUP BY strftime('%H', timestamp)
                     ORDER BY hour
-                """, (cutoff_time.isoformat(),))
+                """, params)
 
                 hourly_distribution = {row[0]: row[1] for row in cursor.fetchall()}
 

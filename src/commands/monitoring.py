@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 
 class MonitoringCommands(BaseCommandMixin):
     """Monitoring and telemetry command functionality"""
-    
+
     def __init__(self, meshtastic, discord_to_mesh, database):
         super().__init__()
         self.meshtastic = meshtastic
         self.discord_to_mesh = discord_to_mesh
         self.database = database
-        
+
         # Live monitor state
         self._live_monitors = {}  # user_id -> {'active': bool, 'task': asyncio.Task}
         self._packet_buffer = []  # Store recent packets for live display
@@ -64,7 +64,7 @@ class MonitoringCommands(BaseCommandMixin):
         except Exception as db_error:
             logger.error("Database error getting telemetry summary: %s", db_error)
             await self._safe_send(
-                message.channel, 
+                message.channel,
                 "❌ Error retrieving telemetry data from database."
             )
             return
@@ -73,7 +73,7 @@ class MonitoringCommands(BaseCommandMixin):
         connection_status = "❌ Disconnected"
         if self.meshtastic.iface:
             try:
-                if (hasattr(self.meshtastic.iface, 'isConnected') and 
+                if (hasattr(self.meshtastic.iface, 'isConnected') and
                     callable(self.meshtastic.iface.isConnected)):
                     if self.meshtastic.iface.isConnected():
                         connection_status = "✅ Connected"
@@ -145,7 +145,7 @@ Connection: {connection_status}""",
         meshtastic_status = "❌ Disconnected"
         if self.meshtastic.iface:
             try:
-                if (hasattr(self.meshtastic.iface, 'isConnected') and 
+                if (hasattr(self.meshtastic.iface, 'isConnected') and
                     callable(self.meshtastic.iface.isConnected)):
                     if self.meshtastic.iface.isConnected():
                         meshtastic_status = "✅ Connected"

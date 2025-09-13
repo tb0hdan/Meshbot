@@ -20,11 +20,11 @@ def get_utc_time():
 
 class MessageProcessor:
     """Processes messages between Discord and Mesh networks"""
-    
+
     def __init__(self, database, meshtastic):
         self.database = database
         self.meshtastic = meshtastic
-    
+
     async def process_mesh_to_discord(self, mesh_to_discord_queue: queue.Queue, channel, command_handler):
         """Process messages from mesh to Discord with improved error handling"""
         try:
@@ -41,7 +41,7 @@ class MessageProcessor:
                             await self._process_traceroute_message(item, channel)
                         elif item.get('type') == 'movement':
                             await self._process_movement_message(item, channel)
-                        
+
                         # Special handling for ping messages
                         if item.get('type') == 'text' and item.get('text', '').strip().lower() == "ping":
                             await self._handle_ping_response(item, channel)
@@ -49,7 +49,7 @@ class MessageProcessor:
                         # Handle other message types
                         message_text = f"📡 **Mesh Message:** {str(item)[:1900]}"
                         await channel.send(message_text)
-                    
+
                     processed_count += 1
 
                 except discord.HTTPException as e:
@@ -93,7 +93,7 @@ class MessageProcessor:
 
         await channel.send(message_text)
         logger.info(
-            "📤 DISCORD: Sent message to Discord - '%s%s' from %s", 
+            "📤 DISCORD: Sent message to Discord - '%s%s' from %s",
             text[:30], '...' if len(text) > 30 else '', from_name
         )
 
@@ -176,7 +176,7 @@ class MessageProcessor:
     async def _handle_ping_response(self, item: Dict[str, Any], channel):
         """Handle ping message response"""
         from_name = item.get('from_name', item.get('from_id', 'Unknown'))
-        
+
         # Wait a moment for the ping message to be displayed first
         await asyncio.sleep(1.0)
 
@@ -232,7 +232,7 @@ class MessageProcessor:
             node_id = parts[0][8:]  # Remove 'nodenum='
             message_text = parts[1]
             logger.info(
-                "📤 MESH: Sending message to node %s - '%s%s'", 
+                "📤 MESH: Sending message to node %s - '%s%s'",
                 node_id, message_text[:50], '...' if len(message_text) > 50 else ''
             )
             try:
@@ -244,7 +244,7 @@ class MessageProcessor:
     async def _send_broadcast_message(self, message: str):
         """Send broadcast message to primary channel"""
         logger.info(
-            "📤 MESH: Sending message to primary channel - '%s%s'", 
+            "📤 MESH: Sending message to primary channel - '%s%s'",
             message[:50], '...' if len(message) > 50 else ''
         )
         try:

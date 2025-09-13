@@ -52,7 +52,7 @@ class PacketProcessor:
             }
             self.mesh_to_discord_queue.put(msg_payload)
             logger.info(
-                "💬 MESSAGE: Queued for Discord - '%s%s' from %s", 
+                "💬 MESSAGE: Queued for Discord - '%s%s' from %s",
                 text[:50], '...' if len(text) > 50 else '', from_name
             )
 
@@ -284,7 +284,7 @@ class PacketProcessor:
 
             # Check for movement
             self._check_for_movement(from_id, new_lat, new_lon, new_alt)
-            
+
             # Store new position
             self._store_position_data(from_id, position_data, new_lat, new_lon, new_alt)
 
@@ -308,7 +308,7 @@ class PacketProcessor:
 
         # Calculate distance moved
         distance_moved = self.calculate_distance(last_lat, last_lon, new_lat, new_lon)
-        
+
         # Movement threshold: 100 meters
         movement_threshold = 100.0
 
@@ -522,3 +522,4 @@ class PacketProcessor:
         except Exception as e:
             logger.error("Error calculating distance: %s", e)
             return 0.0
+

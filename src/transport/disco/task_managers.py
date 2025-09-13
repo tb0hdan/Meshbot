@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class BackgroundTaskManager:
     """Manages background tasks for the Discord bot"""
-    
+
     def __init__(self, bot, config, meshtastic, database, message_processor, packet_processor):
         self.bot = bot
         self.config = config
@@ -23,48 +23,48 @@ class BackgroundTaskManager:
         self.database = database
         self.message_processor = message_processor
         self.packet_processor = packet_processor
-        
+
         # Task references
         self.bg_task = None
         self.telemetry_task = None
-        
+
         # Track last telemetry update hour
         self.last_telemetry_hour = datetime.now().hour
-    
+
     def start_tasks(self):
         """Start all background tasks"""
         if self.bot.loop:
             self.bg_task = self.bot.loop.create_task(self.background_task())
             self.telemetry_task = self.bot.loop.create_task(self.telemetry_update_task())
             logger.info("Background tasks started")
-    
+
     async def stop_tasks(self):
         """Stop all background tasks"""
         tasks_to_cancel = []
-        
+
         if self.bg_task and not self.bg_task.done():
             tasks_to_cancel.append(self.bg_task)
-        
+
         if self.telemetry_task and not self.telemetry_task.done():
             tasks_to_cancel.append(self.telemetry_task)
-        
+
         # Cancel all tasks
         for task in tasks_to_cancel:
             task.cancel()
-        
+
         # Wait for cancellation
         for task in tasks_to_cancel:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-        
+
         logger.info("Background tasks stopped")
-    
+
     async def background_task(self):
         """Main background task for handling queues and processing"""
         await self.bot.wait_until_ready()
-        
+
         channel = self.bot.get_channel(self.config.channel_id)
         if not channel:
             logger.error("Could not find channel with ID %s", self.config.channel_id)
@@ -101,7 +101,7 @@ class BackgroundTaskManager:
             except Exception as e:
                 logger.error("Error in background task: %s", e)
                 await asyncio.sleep(5)
-    
+
     async def telemetry_update_task(self):
         """Task for hourly telemetry updates"""
         await self.bot.wait_until_ready()
@@ -120,7 +120,7 @@ class BackgroundTaskManager:
             except Exception as e:
                 logger.error("Error in telemetry update task: %s", e)
                 await asyncio.sleep(60)
-    
+
     async def _process_nodes(self, channel):
         """Process and store nodes, announce new ones"""
         try:
@@ -138,7 +138,7 @@ class BackgroundTaskManager:
 
         except Exception as e:
             logger.error("Error processing nodes: %s", e)
-    
+
     async def _announce_new_node(self, channel, node):
         """Announce new node with embed"""
         try:
@@ -148,7 +148,7 @@ class BackgroundTaskManager:
 
         except Exception as e:
             logger.error("Error announcing new node: %s", e)
-    
+
     async def _send_telemetry_update(self):
         """Send hourly telemetry update"""
         try:
@@ -170,7 +170,7 @@ class BackgroundTaskManager:
 
         except Exception as e:
             logger.error("Error sending telemetry update: %s", e)
-    
+
     async def _periodic_cleanup(self):
         """Perform periodic cleanup tasks"""
         try:
@@ -190,10 +190,10 @@ class BackgroundTaskManager:
 
 class PingHandler:
     """Handles ping/pong functionality"""
-    
+
     def __init__(self, meshtastic):
         self.meshtastic = meshtastic
-    
+
     async def handle_ping(self, message):
         """Handle ping command - send pong to mesh and announce to Discord"""
         try:
@@ -211,7 +211,7 @@ class PingHandler:
             pong_sent = self.meshtastic.send_text("Pong!")
             # Small delay to prevent timing issues
             await asyncio.sleep(0.5)
-            
+
             if pong_sent:
                 # Send success response
                 success_embed = EmbedBuilder.create_ping_success_embed(message.author.display_name)
@@ -221,7 +221,7 @@ class PingHandler:
                 # Send failure response
                 fail_embed = EmbedBuilder.create_ping_failure_embed(message.author.display_name)
                 await message.channel.send(embed=fail_embed)
-                
+
         except Exception as e:
             logger.error("Error handling ping: %s", e)
             error_embed = EmbedBuilder.create_ping_error_embed(str(e), message.author.display_name)
@@ -230,11 +230,11 @@ class PingHandler:
 
 class NodeProcessor:
     """Handles node-related processing and announcements"""
-    
+
     def __init__(self, database, meshtastic):
         self.database = database
         self.meshtastic = meshtastic
-    
+
     async def process_and_announce_nodes(self, channel):
         """Process nodes and announce new ones"""
         try:
@@ -242,7 +242,7 @@ class NodeProcessor:
             if not result or len(result) != 2:
                 logger.debug("No nodes processed or invalid result format")
                 return
-            
+
             processed_nodes, new_nodes = result
             logger.info("Node processing result: %s processed, %s new", len(processed_nodes), len(new_nodes))
 
@@ -258,16 +258,16 @@ class NodeProcessor:
 
 class TelemetryManager:
     """Manages telemetry updates and summaries"""
-    
+
     def __init__(self, database, config):
         self.database = database
         self.config = config
         self.last_telemetry_hour = datetime.now().hour
-    
+
     async def send_hourly_update(self, channel):
         """Send hourly telemetry update if it's a new hour"""
         current_hour = datetime.now().hour
-        
+
         if current_hour != self.last_telemetry_hour:
             try:
                 summary = self.database.get_telemetry_summary(60)
@@ -275,12 +275,12 @@ class TelemetryManager:
                     embed = EmbedBuilder.create_telemetry_update_embed(summary)
                     await channel.send(embed=embed)
                     logger.info("Sent hourly telemetry update")
-                
+
                 self.last_telemetry_hour = current_hour
-                
+
             except Exception as e:
                 logger.error("Error sending telemetry update: %s", e)
-    
+
     def should_send_update(self) -> bool:
         """Check if it's time to send a telemetry update"""
         current_hour = datetime.now().hour

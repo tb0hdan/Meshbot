@@ -120,7 +120,7 @@ class DiscordBot(discord.Client):
 
             # Log packet reception
             logger.info(
-                "📦 PACKET RECEIVED: %s from %s (%s) -> %s | Hops: %s | SNR: %s | RSSI: %s", 
+                "📦 PACKET RECEIVED: %s from %s (%s) -> %s | Hops: %s | SNR: %s | RSSI: %s",
                 portnum, from_name, from_id, to_id, hops_away, snr, rssi
             )
 
@@ -204,3 +204,4 @@ class DiscordBot(discord.Client):
         except Exception as e:
             logger.error("Error during bot shutdown: %s", e)
             await super().close()
+

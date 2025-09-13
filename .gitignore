@@ -1,5 +1,7 @@
 .claude/
 __pycache__
+.pytest_cache/
 Pipfile
 Pipfile.lock
+.coverage
 bot.log

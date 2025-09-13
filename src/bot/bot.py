@@ -2,6 +2,7 @@
 # Standard library imports
 import logging
 import os
+import sqlite3
 import sys
 
 # Third party imports
@@ -10,8 +11,8 @@ from dotenv import load_dotenv
 # Local imports
 from src.config import BOT_CONFIG, Config
 from src.database import MeshtasticDatabase
-from src.transport.meshtastic import MeshtasticInterface
-from src.transport.discord import DiscordBot
+from src.transport.mesh import MeshtasticInterface
+from src.transport.disco import DiscordBot
 
 # Configure logging
 logging.basicConfig(
@@ -65,7 +66,7 @@ def main():
         try:
             database = MeshtasticDatabase()
             logger.info("Database initialized successfully")
-        except Exception as db_error:
+        except (ImportError, OSError, sqlite3.Error) as db_error:
             logger.error("Failed to initialize database: %s", db_error)
             sys.exit(1)
 
@@ -73,7 +74,7 @@ def main():
         try:
             meshtastic_interface = MeshtasticInterface(config.meshtastic_hostname, database)
             logger.info("Meshtastic interface created successfully")
-        except Exception as mesh_error:
+        except (ImportError, OSError, ConnectionError) as mesh_error:
             logger.error("Failed to create Meshtastic interface: %s", mesh_error)
             sys.exit(1)
 
@@ -82,7 +83,7 @@ def main():
             bot = DiscordBot(config, meshtastic_interface, database)
             logger.info("Discord bot created successfully")
             bot.run(config.discord_token)
-        except Exception as bot_error:
+        except (ImportError, OSError, ConnectionError) as bot_error:
             logger.error("Failed to create or run Discord bot: %s", bot_error)
             sys.exit(1)
 
@@ -92,14 +93,14 @@ def main():
         if 'database' in locals():
             try:
                 database.close()
-            except Exception:
+            except (OSError, sqlite3.Error):
                 pass
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError) as e:
         logger.error("Fatal error: %s", e)
         # Clean up database if it exists
         if 'database' in locals():
             try:
                 database.close()
-            except Exception:
+            except (OSError, sqlite3.Error):
                 pass
         sys.exit(1)

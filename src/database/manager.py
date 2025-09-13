@@ -23,17 +23,17 @@ class MeshtasticDatabase:
 
     def __init__(self, db_path: str = "meshtastic.db"):
         self.db_path = db_path
-        
+
         # Initialize connection manager
         self.connection_manager = DatabaseConnection(db_path)
-        
+
         # Initialize operation modules
         self.nodes = NodeOperations(self.connection_manager)
         self.telemetry = TelemetryOperations(self.connection_manager)
         self.positions = PositionOperations(self.connection_manager)
         self.messages = MessageOperations(self.connection_manager)
         self.maintenance = DatabaseMaintenance(self.connection_manager)
-        
+
         # Initialize database and start maintenance
         self.init_database()
         self.maintenance.start_maintenance_task()
@@ -155,5 +155,5 @@ class MeshtasticDatabase:
             self.close_connections()
 
             logger.info("Database shutdown complete")
-        except Exception as e:
+        except (OSError, sqlite3.Error) as e:
             logger.error("Error during database shutdown: %s", e)

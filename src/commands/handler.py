@@ -23,9 +23,9 @@ class CommandHandler:
     """Handles Discord bot commands with modular command structure"""
 
     def __init__(
-        self, 
-        meshtastic, 
-        discord_to_mesh: queue.Queue, 
+        self,
+        meshtastic,
+        discord_to_mesh: queue.Queue,
         database: MeshtasticDatabase
     ):
         self.meshtastic = meshtastic
@@ -80,7 +80,7 @@ class CommandHandler:
         if user_id in self._command_cooldowns:
             if now - self._command_cooldowns[user_id] < self._cooldown_duration:
                 await self._safe_send(
-                    message.channel, 
+                    message.channel,
                     "⏰ Please wait a moment before using another command."
                 )
                 return True

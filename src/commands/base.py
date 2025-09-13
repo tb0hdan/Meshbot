@@ -21,30 +21,30 @@ def cache_result(ttl_seconds=300):
             func._cache = {}
             func._cache_timestamps = {}
             func._cache_lock = asyncio.Lock()
-        
+
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             # Create a cache key from function arguments
             cache_key = str(args) + str(sorted(kwargs.items()))
-            
+
             async with func._cache_lock:  # Thread-safe access
                 current_time = time.time()
-                
+
                 # Check if cached result exists and is still valid
-                if (cache_key in func._cache and 
+                if (cache_key in func._cache and
                     cache_key in func._cache_timestamps and
                     current_time - func._cache_timestamps[cache_key] < ttl_seconds):
                     logger.debug("Cache hit for %s", func.__name__)
                     return func._cache[cache_key]
-                
+
                 # Call the actual function
                 logger.debug("Cache miss for %s", func.__name__)
                 result = await func(*args, **kwargs)
-                
+
                 # Store result in cache
                 func._cache[cache_key] = result
                 func._cache_timestamps[cache_key] = current_time
-                
+
                 # Clean old cache entries
                 expired_keys = [
                     key for key, timestamp in func._cache_timestamps.items()
@@ -53,9 +53,9 @@ def cache_result(ttl_seconds=300):
                 for key in expired_keys:
                     func._cache.pop(key, None)
                     func._cache_timestamps.pop(key, None)
-                
+
                 return result
-        
+
         return wrapper
     return decorator
 
@@ -74,7 +74,7 @@ def format_utc_time(dt=None, format_str="%Y-%m-%d %H:%M:%S UTC"):
 
 class BaseCommandMixin:
     """Base mixin for command functionality"""
-    
+
     def __init__(self):
         # Cache for frequently accessed data
         self._node_cache = {}

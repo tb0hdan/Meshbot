@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class DebugCommands(BaseCommandMixin):
     """Debug and administrative command functionality"""
-    
+
     def __init__(self, meshtastic, discord_to_mesh, database):
         super().__init__()
         self.meshtastic = meshtastic
