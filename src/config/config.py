@@ -1,7 +1,9 @@
-"""
-Configuration file for Meshtastic Discord Bridge Bot
+"""Configuration file for Meshtastic Discord Bridge Bot.
+
 Modify these settings to customize bot behavior
 """
+from dataclasses import dataclass
+from typing import Optional
 
 # Bot Configuration
 BOT_CONFIG = {
@@ -63,3 +65,15 @@ MESSAGE_TEMPLATES = {
         "Meshtastic: {mesh_status}"
     ),
 }
+
+@dataclass
+class Config:
+    """Configuration class for bot settings"""
+    discord_token: str
+    channel_id: int
+    meshtastic_hostname: Optional[str]
+    message_max_length: int = 225
+    node_refresh_interval: int = 60  # seconds
+    active_node_threshold: int = 60  # minutes - configurable via config.py
+    telemetry_update_interval: int = 3600  # 1 hour in seconds
+    max_queue_size: int = 1000  # Maximum queue size for messages
